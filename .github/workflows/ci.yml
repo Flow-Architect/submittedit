@@ -48,19 +48,22 @@ jobs:
           persist-credentials: false
 
       - name: Install Monad Foundry bootstrapper
-        run: curl --fail --show-error --location https://foundry.category.xyz | bash
+        run: |
+          export FOUNDRY_DIR="$RUNNER_TEMP/monad-foundry"
+          echo "FOUNDRY_DIR=$FOUNDRY_DIR" >> "$GITHUB_ENV"
+          curl --fail --show-error --location https://foundry.category.xyz | bash
 
       - name: Install Monad Foundry
-        run: '"$HOME/.foundry/bin/foundryup" --network monad'
+        run: '"$FOUNDRY_DIR/bin/foundryup" --network monad'
 
       - name: Check Solidity formatting
         working-directory: contracts
-        run: '"$HOME/.foundry/bin/forge" fmt --check'
+        run: '"$FOUNDRY_DIR/bin/forge" fmt --check'
 
       - name: Build contracts
         working-directory: contracts
-        run: '"$HOME/.foundry/bin/forge" build'
+        run: '"$FOUNDRY_DIR/bin/forge" build'
 
       - name: Test contracts
         working-directory: contracts
-        run: '"$HOME/.foundry/bin/forge" test'
+        run: '"$FOUNDRY_DIR/bin/forge" test'
