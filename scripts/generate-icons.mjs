@@ -1,4 +1,3 @@
-import { deflateSync } from "node:zlib";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -183,6 +182,39 @@ const createChunk = (type, data) => {
   return Buffer.concat([length, typeBuffer, data, checksum]);
 };
 
+const adler32 = (buffer) => {
+  let first = 1;
+  let second = 0;
+
+  for (const byte of buffer) {
+    first = (first + byte) % 65521;
+    second = (second + first) % 65521;
+  }
+
+  return ((second << 16) | first) >>> 0;
+};
+
+const encodeStoredDeflate = (buffer) => {
+  const chunks = [Buffer.from([0x78, 0x01])];
+
+  for (let offset = 0; offset < buffer.length; offset += 65535) {
+    const block = buffer.subarray(offset, Math.min(offset + 65535, buffer.length));
+    const header = Buffer.alloc(5);
+    const isFinal = offset + block.length === buffer.length;
+
+    header[0] = isFinal ? 0x01 : 0x00;
+    header.writeUInt16LE(block.length, 1);
+    header.writeUInt16LE(0xffff - block.length, 3);
+    chunks.push(header, block);
+  }
+
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(adler32(buffer));
+  chunks.push(checksum);
+
+  return Buffer.concat(chunks);
+};
+
 const encodePng = (size, pixels) => {
   const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
   const header = Buffer.alloc(13);
@@ -202,7 +234,7 @@ const encodePng = (size, pixels) => {
   return Buffer.concat([
     signature,
     createChunk("IHDR", header),
-    createChunk("IDAT", deflateSync(scanlines, { level: 9 })),
+    createChunk("IDAT", encodeStoredDeflate(scanlines)),
     createChunk("IEND", Buffer.alloc(0)),
   ]);
 };
