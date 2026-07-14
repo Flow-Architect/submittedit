@@ -1,0 +1,56 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.keystore
+
+# Node, pnpm, Next.js, and extension output
+node_modules/
+.pnpm-store/
+.next/
+.output/
+.wxt/
+out/
+dist/
+build/
+*.tsbuildinfo
+
+# Tests and coverage
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+blob-report/
+
+# Foundry output and sensitive broadcast material
+cache/
+broadcast/
+contracts/cache/
+contracts/out/
+contracts/broadcast/
+
+# Local databases
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs and temporary archives
+*.log
+logs/
+tmp/
+temp/
+*.zip
+*.tar
+*.tar.gz
+*.tgz
