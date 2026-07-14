@@ -48,21 +48,19 @@ jobs:
           persist-credentials: false
 
       - name: Install Monad Foundry bootstrapper
-        run: |
-          curl --fail --show-error --location https://foundry.category.xyz | bash
-          echo "$HOME/.foundry/bin" >> "$GITHUB_PATH"
+        run: curl --fail --show-error --location https://foundry.category.xyz | bash
 
       - name: Install Monad Foundry
-        run: foundryup --network monad
+        run: '"$HOME/.foundry/bin/foundryup" --network monad'
 
       - name: Check Solidity formatting
         working-directory: contracts
-        run: forge fmt --check
+        run: '"$HOME/.foundry/bin/forge" fmt --check'
 
       - name: Build contracts
         working-directory: contracts
-        run: forge build
+        run: '"$HOME/.foundry/bin/forge" build'
 
       - name: Test contracts
         working-directory: contracts
-        run: forge test
+        run: '"$HOME/.foundry/bin/forge" test'
