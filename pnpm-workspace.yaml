@@ -1,0 +1,12 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  esbuild: true
+  sharp: true
+  spawn-sync: false
+  unrs-resolver: true
+
+minimumReleaseAgeExclude:
+  - viem@2.55.2

@@ -1,0 +1,15 @@
+.agents/
+.codex/
+.git/
+.next/
+.output/
+.wxt/
+AGENTS.override.md
+cache/
+coverage/
+dist/
+node_modules/
+out/
+playwright-report/
+pnpm-lock.yaml
+test-results/

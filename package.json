@@ -1,0 +1,34 @@
+{
+  "name": "submittedit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "SubmittedIt engineering workspace",
+  "packageManager": "pnpm@11.13.0",
+  "engines": {
+    "node": ">=22.13.0",
+    "pnpm": "11.13.0"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @submittedit/web --filter @submittedit/extension dev",
+    "build": "pnpm --recursive --if-present build",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write . --ignore-unknown",
+    "format:check": "prettier --check . --ignore-unknown",
+    "typecheck": "pnpm --recursive --if-present typecheck",
+    "test": "vitest run",
+    "test:e2e": "playwright test && pnpm --filter @submittedit/web typegen",
+    "secrets:check": "node scripts/check-secrets.mjs",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm secrets:check"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "@types/node": "22.20.1",
+    "@types/react": "19.2.17",
+    "@types/react-dom": "19.2.3",
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.2.10",
+    "prettier": "3.9.5",
+    "typescript": "6.0.3",
+    "vitest": "4.1.10"
+  }
+}

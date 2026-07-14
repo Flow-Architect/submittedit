@@ -1,0 +1,10 @@
+{
+  "extends": ["../../tsconfig.base.json", "./.wxt/tsconfig.json"],
+  "compilerOptions": {
+    "exactOptionalPropertyTypes": true,
+    "jsx": "react-jsx",
+    "noImplicitAny": true,
+    "noUncheckedIndexedAccess": true,
+    "strict": true
+  }
+}
