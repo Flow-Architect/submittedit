@@ -3,12 +3,17 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "sideEffects": false,
+  "sideEffects": [
+    "./src/tokens.css"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./mark.svg": "./assets/brand/submittedit-mark.svg",
+    "./tokens.css": "./src/tokens.css",
+    "./wordmark.svg": "./assets/brand/submittedit-wordmark.svg"
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",

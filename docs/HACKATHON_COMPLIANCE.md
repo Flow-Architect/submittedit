@@ -20,7 +20,7 @@ SubmittedIt is governed by the following stable public submission requirements.
 
 - The extension, demo portal, verifier, and onchain workflow must use live runtime data.
 - Every repeated submission must produce a distinct receipt.
-- Accepted and Rejected require a verified authoritative acknowledgment; site confirmation alone leaves the receipt Pending.
+- Accepted and Rejected require a verified authoritative acknowledgment; site confirmation alone leaves the receipt Pending acceptance.
 - Tampered receipt data must fail verification.
 - No workflow may rely on a static receipt, transaction hash, explorer link, success response, screenshot, or other placeholder presented as working functionality.
 - No feature may be described as complete unless a judge can exercise its real behavior.

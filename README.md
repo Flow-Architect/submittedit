@@ -2,7 +2,7 @@
 
 **Know when it's really submitted.**
 
-SubmittedIt is a browser extension and verification application for important online submissions. It tracks Prepared, Attempted, Site confirmed, Pending, Accepted, and Rejected. A click or success-looking page never counts as authority acceptance.
+SubmittedIt is a browser extension and verification application for important online submissions. It tracks Prepared, Attempted, Site confirmed, Pending acceptance, Accepted, Rejected, and Verification failed. A click or success-looking page never counts as authority acceptance.
 
 ## Why it exists
 
@@ -20,9 +20,9 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 01 engineering foundation: buildable web and extension shells, empty shared packages, an empty Monad Foundry project, deterministic quality gates, and CI. Submission capture, receipt behavior, contract logic, deployment, and verification are not implemented yet.
+The repository currently contains the Goal 02 identity foundation: a reviewed product identity, evidence-state language, UX wireframes and copy, reusable CSS tokens and brand metadata, deterministic extension icons, buildable application shells, and CI. Submission capture, receipt behavior, contract logic, deployment, and verification are not implemented yet.
 
-See [the product contract](docs/PRODUCT_CONTRACT.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
+See [the product contract](docs/PRODUCT_CONTRACT.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
 
 ## Workspace
 
@@ -31,7 +31,7 @@ apps/web                 Next.js hosted application shell
 apps/extension           WXT React Manifest V3 extension shell
 packages/receipt-core    Receipt-domain package boundary (logic begins in Goal 03)
 packages/contract-client Monad network and future contract-client boundary
-packages/ui              Shared UI package boundary (primitives follow the design contract)
+packages/ui              Shared identity metadata, CSS tokens, and brand assets
 contracts                Empty Monad Foundry project
 ```
 
@@ -75,7 +75,7 @@ forge build
 forge test
 ```
 
-`pnpm check` runs formatting, linting, strict type-checking, unit tests, all workspace builds, and a lightweight secret scan. The Playwright foundation test uses its HTTP request client and does not require a browser download.
+`pnpm check` runs formatting, deterministic icon verification, linting, strict type-checking, unit tests, all workspace builds, and a lightweight secret scan. The Playwright foundation test uses its HTTP request client and does not require a browser download. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark.
 
 Copy only the environment example relevant to the component you are running. The committed examples contain public development defaults and no credentials.
 

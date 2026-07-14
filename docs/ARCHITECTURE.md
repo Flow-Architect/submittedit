@@ -2,7 +2,7 @@
 
 ## Foundation scope
 
-Goal 01 establishes build and dependency boundaries only. The web and extension applications render neutral engineering shells. The shared packages contain no receipt business logic or design primitives, and the Foundry project contains no smart contract.
+Goals 01–02 establish build boundaries and the reusable identity foundation. The web and extension applications still render neutral engineering shells. The shared packages contain no receipt business logic, interactive product components, or submission behavior, and the Foundry project contains no smart contract.
 
 ## Workspace boundaries
 
@@ -12,7 +12,7 @@ Goal 01 establishes build and dependency boundaries only. The web and extension 
 | `apps/extension`           | Future Manifest V3 extension and browser-side lifecycle capture      | browser-safe shared packages                 |
 | `packages/receipt-core`    | Future canonical schemas, hashing, signing, and encryption           | platform-neutral libraries                   |
 | `packages/contract-client` | Monad chain configuration, future ABI, reads, and explorer helpers   | `viem` and public deployment metadata        |
-| `packages/ui`              | Small shared visual primitives after the design contract is approved | React only                                   |
+| `packages/ui`              | Shared brand metadata, semantic CSS tokens, and source vector assets | No application or receipt-domain dependency  |
 | `contracts`                | Future linked lifecycle registry and Foundry tests                   | audited Solidity libraries where appropriate |
 
 Applications may consume shared packages. Shared packages must not import application code. `receipt-core` must remain usable in browser and Node runtimes. Contract source and public deployment metadata belong in Git; generated output, broadcasts, keys, and environment secrets do not.
@@ -39,6 +39,7 @@ The contract may later store only lifecycle and integrity values: receipt and ev
 - Vitest covers deterministic unit and configuration checks. Playwright is configured for future browser journeys and currently verifies the served web shell over HTTP.
 - CI repeats frozen installation, the root quality gate, and Monad Foundry formatting/build/test commands.
 - Monad Foundry is installed through Monad's official fork and initialized with its native `--network monad` configuration.
+- The `packages/ui` package exports identity metadata and a token stylesheet without coupling either application to a component framework. Its canonical self-contained SVG mark deterministically produces the committed WXT extension PNG icons through a dependency-free Node script.
 
 ## Monad safety boundary
 

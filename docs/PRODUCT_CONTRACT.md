@@ -15,11 +15,12 @@ SubmittedIt addresses the dangerous gap between pressing Submit and receiving au
 - **Prepared** — the user has a completed submission ready to send. This is a local state, not proof that a request was transmitted.
 - **Attempted** — the browser transmitted or attempted to transmit the form. This does not prove that the receiving site processed it.
 - **Site confirmed** — the website displayed confirmation or next-step evidence. This is evidence of what the site showed, not authority acceptance.
-- **Pending** — an attempt or site confirmation exists, but no verified authoritative outcome exists.
+- **Pending acceptance** — an attempt or site confirmation exists, but no verified authoritative outcome exists.
 - **Accepted** — a verified authoritative acknowledgment confirms acceptance.
 - **Rejected** — a verified authoritative acknowledgment confirms rejection.
+- **Verification failed** — one or more applicable integrity checks failed, so the receipt cannot be trusted as presented. This is a verification outcome, not proof of authority rejection or intentional tampering.
 
-Prepared is not anchored as a submission event. Attempted, Site confirmed, Accepted, and Rejected form the evidence lifecycle. A receipt remains Pending until a verified authoritative acknowledgment creates Accepted or Rejected.
+Prepared is not anchored as a submission event. Attempted, Site confirmed, Accepted, and Rejected form the evidence lifecycle. A receipt remains Pending acceptance until a verified authoritative acknowledgment creates Accepted or Rejected. Verification failed overrides the displayed lifecycle when the underlying evidence cannot be trusted.
 
 ## Allowed claims
 
@@ -32,7 +33,7 @@ SubmittedIt may claim that it can:
 - prove whether a shared receipt bundle matches its original anchored fingerprint;
 - detect when a receipt bundle, claimed field, stage, or evidence item changes;
 - provide an independently timestamped chain of lifecycle events on Monad;
-- warn when a submission remains Pending and must not be assumed complete;
+- warn when a submission remains Pending acceptance and must not be assumed complete;
 - keep raw private values out of the smart contract; and
 - demonstrate authority acceptance or rejection with a signed acknowledgment from the fictional hosted demo authority.
 
@@ -66,7 +67,7 @@ The required MVP includes:
 - privacy-safe encrypted receipt bundles and an exportable encrypted receipt file;
 - linked lifecycle anchoring through a real contract on Monad Testnet;
 - a hosted dynamic demo filing portal, encrypted receipt storage, and a browser-decrypting verifier;
-- Pending, Accepted, and Rejected outcomes, including a real no-acknowledgment warning;
+- Pending acceptance, Accepted, Rejected, and Verification failed outcomes, including a real no-acknowledgment warning;
 - tamper verification that fails when claimed evidence changes;
 - an installable extension build or reproducible local installation; and
 - public source code and setup instructions.

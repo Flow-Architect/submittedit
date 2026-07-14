@@ -1,0 +1,135 @@
+:where(:root, [data-submittedit-theme="light"]) {
+  color-scheme: light;
+
+  --sui-color-canvas: #f4f0e6;
+  --sui-color-surface: #fffcf5;
+  --sui-color-surface-strong: #ffffff;
+  --sui-color-ink: #172a24;
+  --sui-color-ink-soft: #455a52;
+  --sui-color-rule: #a8b6af;
+  --sui-color-rule-strong: #6e8078;
+  --sui-color-accent: #b44a2b;
+  --sui-color-accent-hover: #8f351f;
+  --sui-color-accent-soft: #f4ded3;
+  --sui-color-link: #0b6757;
+  --sui-color-focus: #005fcc;
+  --sui-color-on-dark: #fffcf5;
+
+  --sui-status-prepared-fg: #3f5057;
+  --sui-status-prepared-bg: #e9eff1;
+  --sui-status-prepared-border: #6f8188;
+  --sui-status-attempted-fg: #154f73;
+  --sui-status-attempted-bg: #e4f1f8;
+  --sui-status-attempted-border: #3b7ea6;
+  --sui-status-site-confirmed-fg: #145a52;
+  --sui-status-site-confirmed-bg: #dff2ed;
+  --sui-status-site-confirmed-border: #36887d;
+  --sui-status-pending-acceptance-fg: #6f4300;
+  --sui-status-pending-acceptance-bg: #fff0ba;
+  --sui-status-pending-acceptance-border: #b46a00;
+  --sui-status-accepted-fg: #185a3b;
+  --sui-status-accepted-bg: #ddf3e7;
+  --sui-status-accepted-border: #2e865c;
+  --sui-status-rejected-fg: #7a2735;
+  --sui-status-rejected-bg: #f8e2e6;
+  --sui-status-rejected-border: #b24a5b;
+  --sui-status-verification-failed-fg: #721d29;
+  --sui-status-verification-failed-bg: #ffe8ea;
+  --sui-status-verification-failed-border: #c23447;
+
+  --sui-font-brand: Georgia, "Times New Roman", serif;
+  --sui-font-ui: "Avenir Next", Avenir, "Segoe UI", sans-serif;
+  --sui-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --sui-font-size-1: 0.75rem;
+  --sui-font-size-2: 0.875rem;
+  --sui-font-size-3: 1rem;
+  --sui-font-size-4: 1.125rem;
+  --sui-font-size-5: 1.375rem;
+  --sui-font-size-6: 1.875rem;
+  --sui-font-size-7: 2.5rem;
+  --sui-font-size-8: 3.5rem;
+  --sui-line-height-tight: 1.08;
+  --sui-line-height-heading: 1.2;
+  --sui-line-height-body: 1.55;
+  --sui-letter-spacing-label: 0.06em;
+
+  --sui-space-1: 0.25rem;
+  --sui-space-2: 0.5rem;
+  --sui-space-3: 0.75rem;
+  --sui-space-4: 1rem;
+  --sui-space-5: 1.5rem;
+  --sui-space-6: 2rem;
+  --sui-space-7: 3rem;
+  --sui-space-8: 4rem;
+  --sui-space-9: 6rem;
+
+  --sui-radius-sharp: 0.125rem;
+  --sui-radius-control: 0.25rem;
+  --sui-radius-panel: 0.5rem;
+  --sui-radius-round: 999px;
+  --sui-border-thin: 1px;
+  --sui-border-emphasis: 3px;
+  --sui-shadow-raised: 0 8px 24px rgb(23 42 36 / 12%);
+
+  --sui-focus-width: 3px;
+  --sui-focus-offset: 3px;
+  --sui-motion-fast: 80ms;
+  --sui-motion-standard: 160ms;
+  --sui-motion-deliberate: 240ms;
+  --sui-ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.sui-focus-ring:focus-visible {
+  outline: var(--sui-focus-width) solid var(--sui-color-focus);
+  outline-offset: var(--sui-focus-offset);
+}
+
+[data-submittedit-status="prepared"] {
+  --sui-status-fg: var(--sui-status-prepared-fg);
+  --sui-status-bg: var(--sui-status-prepared-bg);
+  --sui-status-border: var(--sui-status-prepared-border);
+}
+
+[data-submittedit-status="attempted"] {
+  --sui-status-fg: var(--sui-status-attempted-fg);
+  --sui-status-bg: var(--sui-status-attempted-bg);
+  --sui-status-border: var(--sui-status-attempted-border);
+}
+
+[data-submittedit-status="site-confirmed"] {
+  --sui-status-fg: var(--sui-status-site-confirmed-fg);
+  --sui-status-bg: var(--sui-status-site-confirmed-bg);
+  --sui-status-border: var(--sui-status-site-confirmed-border);
+}
+
+[data-submittedit-status="pending-acceptance"] {
+  --sui-status-fg: var(--sui-status-pending-acceptance-fg);
+  --sui-status-bg: var(--sui-status-pending-acceptance-bg);
+  --sui-status-border: var(--sui-status-pending-acceptance-border);
+}
+
+[data-submittedit-status="accepted"] {
+  --sui-status-fg: var(--sui-status-accepted-fg);
+  --sui-status-bg: var(--sui-status-accepted-bg);
+  --sui-status-border: var(--sui-status-accepted-border);
+}
+
+[data-submittedit-status="rejected"] {
+  --sui-status-fg: var(--sui-status-rejected-fg);
+  --sui-status-bg: var(--sui-status-rejected-bg);
+  --sui-status-border: var(--sui-status-rejected-border);
+}
+
+[data-submittedit-status="verification-failed"] {
+  --sui-status-fg: var(--sui-status-verification-failed-fg);
+  --sui-status-bg: var(--sui-status-verification-failed-bg);
+  --sui-status-border: var(--sui-status-verification-failed-border);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :where(:root, [data-submittedit-theme="light"]) {
+    --sui-motion-fast: 0.01ms;
+    --sui-motion-standard: 0.01ms;
+    --sui-motion-deliberate: 0.01ms;
+  }
+}
