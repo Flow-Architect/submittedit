@@ -20,16 +20,16 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 02 identity foundation: a reviewed product identity, evidence-state language, UX wireframes and copy, reusable CSS tokens and brand metadata, deterministic extension icons, buildable application shells, and CI. Submission capture, receipt behavior, contract logic, deployment, and verification are not implemented yet.
+The repository currently contains the Goal 03 protocol foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak hashing, linked lifecycle validation, capture exclusions, fixed synthetic vectors, real-Chromium parity tests, the reviewed identity system, buildable application shells, and CI. Browser capture, encryption, real signing/verification, contract logic, deployment, and product workflows are not implemented yet.
 
-See [the product contract](docs/PRODUCT_CONTRACT.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
+See [the product contract](docs/PRODUCT_CONTRACT.md), [receipt protocol](docs/RECEIPT_SCHEMA.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
 
 ## Workspace
 
 ```text
 apps/web                 Next.js hosted application shell
 apps/extension           WXT React Manifest V3 extension shell
-packages/receipt-core    Receipt-domain package boundary (logic begins in Goal 03)
+packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Monad network and future contract-client boundary
 packages/ui              Shared identity metadata, CSS tokens, and brand assets
 contracts                Empty Monad Foundry project
@@ -47,6 +47,7 @@ The foundation is locked and validated with:
 - Next.js `16.2.10` and React `19.2.7`
 - WXT `0.20.27`
 - Vitest `4.1.10` and Playwright `1.61.1`
+- Google Chrome or Chromium for real-browser receipt-core parity (`CHROME_PATH` overrides `/usr/bin/google-chrome`)
 - Monad Foundry `1.7.1-monad-v1.0.0`
 - Git `2.55.0`
 
@@ -75,7 +76,7 @@ forge build
 forge test
 ```
 
-`pnpm check` runs formatting, deterministic icon verification, linting, strict type-checking, unit tests, all workspace builds, and a lightweight secret scan. The Playwright foundation test uses its HTTP request client and does not require a browser download. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark.
+`pnpm check` runs formatting, deterministic icon verification, linting, strict type-checking, unit tests, all workspace builds, real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the neutral web-foundation check plus the browser parity check. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark.
 
 Copy only the environment example relevant to the component you are running. The committed examples contain public development defaults and no credentials.
 

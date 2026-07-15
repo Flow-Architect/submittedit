@@ -1,0 +1,133 @@
+{
+  "protocolVersion": "1.0",
+  "hashAlgorithm": "keccak256",
+  "eventDomain": "SUBMITTEDIT/RECEIPT-EVENT/1",
+  "vectors": [
+    {
+      "name": "attempted-normalization-and-controls",
+      "input": {
+        "capturedFields": [
+          {
+            "controlType": "SELECT_MULTIPLE",
+            "fieldId": "contact-options",
+            "name": "contact_options",
+            "values": ["email", "sms"]
+          },
+          {
+            "controlType": "TEXTAREA",
+            "fieldId": "notes",
+            "name": "notes",
+            "values": ["Café\r\nSecond line"]
+          },
+          {
+            "controlType": "CHECKBOX",
+            "fieldId": "terms",
+            "name": "terms",
+            "values": ["confirmed"]
+          },
+          {
+            "controlType": "RADIO",
+            "fieldId": "channel",
+            "name": "channel",
+            "values": ["email"]
+          },
+          {
+            "controlType": "SELECT_ONE",
+            "fieldId": "service-level",
+            "name": "service_level",
+            "values": ["standard"]
+          },
+          {
+            "controlType": "TEXT",
+            "fieldId": "reference-count",
+            "name": "reference_count",
+            "values": ["0012"]
+          }
+        ],
+        "excludedFields": [
+          {
+            "controlType": "HIDDEN",
+            "fieldId": "request-token",
+            "name": "csrf_token",
+            "reason": "SENSITIVE_HIDDEN_TOKEN"
+          },
+          {
+            "controlType": "PASSWORD",
+            "fieldId": "account-password",
+            "name": "account_password",
+            "reason": "PASSWORD"
+          }
+        ],
+        "formDescriptor": {
+          "actionUrl": "https://DEMO.SubmittedIt.test:443/forms/submit#ignored",
+          "encoding": "APPLICATION_X_WWW_FORM_URLENCODED",
+          "formId": "synthetic-form",
+          "method": "post"
+        },
+        "occurredAt": "2026-07-14T12:30:00-05:00",
+        "origin": {
+          "origin": "https://DEMO.SubmittedIt.test:443/start",
+          "pageUrl": "https://demo.submittedit.test:443/forms/start#review"
+        },
+        "previousEventHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "privacyFlags": {
+          "fileMetadataIncluded": false,
+          "rawValuesOffchain": true,
+          "sensitiveFieldsExcluded": true
+        },
+        "receiptId": "0x8f115a79f1f5d232a9036fd5e34424be0d46e45f675ad872c85f4bb9f612f7f1",
+        "schemaVersion": "1.0",
+        "stage": "ATTEMPTED",
+        "submissionAttempt": {
+          "encoding": "APPLICATION_X_WWW_FORM_URLENCODED",
+          "method": "post",
+          "targetUrl": "https://demo.submittedit.test:443/forms/submit#fragment",
+          "trigger": "FORM_SUBMIT"
+        }
+      },
+      "canonicalCore": "{\"capturedFields\":[{\"controlType\":\"RADIO\",\"fieldId\":\"channel\",\"name\":\"channel\",\"values\":[\"email\"]},{\"controlType\":\"SELECT_MULTIPLE\",\"fieldId\":\"contact-options\",\"name\":\"contact_options\",\"values\":[\"email\",\"sms\"]},{\"controlType\":\"TEXTAREA\",\"fieldId\":\"notes\",\"name\":\"notes\",\"values\":[\"Café\\nSecond line\"]},{\"controlType\":\"TEXT\",\"fieldId\":\"reference-count\",\"name\":\"reference_count\",\"values\":[\"0012\"]},{\"controlType\":\"SELECT_ONE\",\"fieldId\":\"service-level\",\"name\":\"service_level\",\"values\":[\"standard\"]},{\"controlType\":\"CHECKBOX\",\"fieldId\":\"terms\",\"name\":\"terms\",\"values\":[\"confirmed\"]}],\"excludedFields\":[{\"controlType\":\"PASSWORD\",\"fieldId\":\"account-password\",\"name\":\"account_password\",\"reason\":\"PASSWORD\"},{\"controlType\":\"HIDDEN\",\"fieldId\":\"request-token\",\"name\":\"csrf_token\",\"reason\":\"SENSITIVE_HIDDEN_TOKEN\"}],\"formDescriptor\":{\"actionUrl\":\"https://demo.submittedit.test/forms/submit\",\"encoding\":\"APPLICATION_X_WWW_FORM_URLENCODED\",\"formId\":\"synthetic-form\",\"method\":\"POST\"},\"occurredAt\":\"2026-07-14T17:30:00.000Z\",\"origin\":{\"origin\":\"https://demo.submittedit.test\",\"pageUrl\":\"https://demo.submittedit.test/forms/start\"},\"previousEventHash\":\"0x0000000000000000000000000000000000000000000000000000000000000000\",\"privacyFlags\":{\"fileMetadataIncluded\":false,\"rawValuesOffchain\":true,\"sensitiveFieldsExcluded\":true},\"receiptId\":\"0x8f115a79f1f5d232a9036fd5e34424be0d46e45f675ad872c85f4bb9f612f7f1\",\"schemaVersion\":\"1.0\",\"stage\":\"ATTEMPTED\",\"submissionAttempt\":{\"encoding\":\"APPLICATION_X_WWW_FORM_URLENCODED\",\"method\":\"POST\",\"targetUrl\":\"https://demo.submittedit.test/forms/submit\",\"trigger\":\"FORM_SUBMIT\"}}",
+      "eventHash": "0xcd2dd74ddeb76ce1188a76dd599053124899548e40c06ca084cc7fc1ee708250"
+    },
+    {
+      "name": "site-confirmed-link",
+      "input": {
+        "occurredAt": "2026-07-14T17:30:02.250Z",
+        "previousEventHash": "0xcd2dd74ddeb76ce1188a76dd599053124899548e40c06ca084cc7fc1ee708250",
+        "receiptId": "0x8f115a79f1f5d232a9036fd5e34424be0d46e45f675ad872c85f4bb9f612f7f1",
+        "schemaVersion": "1.0",
+        "siteConfirmation": {
+          "evidenceType": "CONFIRMATION_PAGE",
+          "message": "Request shown as received\r\nAwaiting authority review.",
+          "pageUrl": "https://demo.submittedit.test:443/forms/confirmation#status",
+          "reference": "SYNTHETIC-REFERENCE"
+        },
+        "stage": "SITE_CONFIRMED"
+      },
+      "canonicalCore": "{\"occurredAt\":\"2026-07-14T17:30:02.250Z\",\"previousEventHash\":\"0xcd2dd74ddeb76ce1188a76dd599053124899548e40c06ca084cc7fc1ee708250\",\"receiptId\":\"0x8f115a79f1f5d232a9036fd5e34424be0d46e45f675ad872c85f4bb9f612f7f1\",\"schemaVersion\":\"1.0\",\"siteConfirmation\":{\"evidenceType\":\"CONFIRMATION_PAGE\",\"message\":\"Request shown as received\\nAwaiting authority review.\",\"pageUrl\":\"https://demo.submittedit.test/forms/confirmation\",\"reference\":\"SYNTHETIC-REFERENCE\"},\"stage\":\"SITE_CONFIRMED\"}",
+      "eventHash": "0x3f485f39b7ae03ca31fc7a297ff6431f45dc8c05e9ecec6491bbfa7e04380809"
+    },
+    {
+      "name": "authority-accepted-link",
+      "input": {
+        "authorityAcknowledgment": {
+          "acknowledgedAt": "2026-07-14T17:31:00Z",
+          "authorityId": "submittedit-demo-authority",
+          "outcome": "ACCEPTED",
+          "reference": "SYNTHETIC-ACKNOWLEDGMENT"
+        },
+        "occurredAt": "2026-07-14T17:31:00Z",
+        "previousEventHash": "0x3f485f39b7ae03ca31fc7a297ff6431f45dc8c05e9ecec6491bbfa7e04380809",
+        "receiptId": "0x8f115a79f1f5d232a9036fd5e34424be0d46e45f675ad872c85f4bb9f612f7f1",
+        "schemaVersion": "1.0",
+        "stage": "AUTHORITY_ACCEPTED"
+      },
+      "canonicalCore": "{\"authorityAcknowledgment\":{\"acknowledgedAt\":\"2026-07-14T17:31:00.000Z\",\"authorityId\":\"submittedit-demo-authority\",\"outcome\":\"ACCEPTED\",\"reference\":\"SYNTHETIC-ACKNOWLEDGMENT\"},\"occurredAt\":\"2026-07-14T17:31:00.000Z\",\"previousEventHash\":\"0x3f485f39b7ae03ca31fc7a297ff6431f45dc8c05e9ecec6491bbfa7e04380809\",\"receiptId\":\"0x8f115a79f1f5d232a9036fd5e34424be0d46e45f675ad872c85f4bb9f612f7f1\",\"schemaVersion\":\"1.0\",\"stage\":\"AUTHORITY_ACCEPTED\"}",
+      "eventHash": "0x8ae4992b4b4ccd3de204439f73297516ccd5dfe2229a61661e1f4261798983dd"
+    }
+  ],
+  "payloadHashes": {
+    "extensionSignature": "0x1e633efd26ee3155219e4cdd320d31672db45e10b124b5712de68f6cf77686c7",
+    "authoritySignature": "0xc4f4ac502344b05d92c78d0c3b6dde32f87091ad9b9e25c7e0a87ef135d79515",
+    "chainAnchor": "0xa87a51de96727dd413f104aab217a9f428851849032b303be37f817619d46e3b"
+  }
+}

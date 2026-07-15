@@ -89,7 +89,15 @@ importers:
         specifier: 2.55.2
         version: 2.55.2(typescript@7.0.2)(zod@4.4.3)
 
-  packages/receipt-core: {}
+  packages/receipt-core:
+    dependencies:
+      '@noble/hashes':
+        specifier: 1.8.0
+        version: 1.8.0
+    devDependencies:
+      vitest:
+        specifier: 4.1.10
+        version: 4.1.10(@types/node@22.20.1)(vite@8.1.4(@types/node@22.20.1)(esbuild@0.27.7)(jiti@2.7.0))
 
   packages/ui:
     dependencies:

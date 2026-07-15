@@ -12,6 +12,14 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
+    "test": "vitest run --config vitest.config.ts",
+    "test:exports": "node test/export-smoke.mjs",
     "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10"
   }
 }
