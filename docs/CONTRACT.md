@@ -2,7 +2,7 @@
 
 ## Status and purpose
 
-`SubmissionReceiptRegistry` is SubmittedIt's protocol-version-1 integrity registry. It anchors linked event fingerprints and enforces lifecycle progression without receiving private receipt contents. It is compiled and tested but **not deployed** in Goal 04; no address or transaction is published yet.
+`SubmissionReceiptRegistry` is SubmittedIt's protocol-version-1 integrity registry. It anchors linked event fingerprints and enforces lifecycle progression without receiving private receipt contents. It is compiled, tested, and prepared for reproducible source verification but **not deployed**; no address, transaction, or verification result is published yet.
 
 The registry proves only that fixed protocol values were included in an append-only Monad transaction history at a block timestamp. It does not inspect the evidence behind an event hash, verify a signature, identify a sender, or establish real-world acceptance, delivery, or legal timeliness.
 
@@ -143,7 +143,9 @@ This makes history independent of an admin but also means the contract cannot co
 
 `contracts/script/DeploySubmissionReceiptRegistry.s.sol` checks `block.chainid == 10143` before entering Foundry's `startBroadcast()` scope. Its test changes the local chain ID and proves an unexpected value reverts before any deployment. The script contains no private key, seed phrase, account address, or environment secret; a future Goal 05 invocation must select a protected Foundry account/keystore through the CLI. Omitting `--broadcast` keeps Foundry script execution in simulation.
 
-Goal 04 did not run a broadcast, create or fund a wallet, verify source, or write deployment metadata.
+Goal 05 preparation requires the RPC through `MONAD_TESTNET_RPC_URL`, pins EVM version `osaka`, and compiles with literal source metadata and no IPFS bytecode hash. MonadVision through its official Sourcify endpoint is the primary future verification route; Monadscan/Etherscan is optional. See [the deployment runbook](DEPLOYMENT.md) for exact commands and stop conditions.
+
+Neither Goal 04 nor this preparation checkpoint ran a broadcast, created or funded a wallet, verified source, or wrote deployment metadata.
 
 ## Reproducible ABI
 
@@ -151,7 +153,8 @@ The reviewed ABI lives at `packages/contract-client/src/abi/SubmissionReceiptReg
 
 ```bash
 cd contracts
-forge build
+export MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
+forge build --force
 cd ..
 pnpm contract:abi
 pnpm contract:abi:check
@@ -159,13 +162,26 @@ pnpm contract:abi:check
 
 The check compares exact bytes, so a source/ABI mismatch fails locally and in the contract CI job. `contract-client` exposes the ABI, fixed enum map, and a strict Goal 03 projection helper. That helper accepts exactly `schemaVersion`, `chainId`, `contractAddress`, `receiptId`, `stage`, `previousEventHash`, and `eventHash`; rejects extra fields; and explicitly carries every projection field into request arguments or request metadata. It adds required key fingerprints without inventing a deployment address, signer, RPC write, or success response.
 
+### Verification-metadata artifact delta
+
+Changing from the default IPFS metadata hash to the official verification-ready settings intentionally changes compiled bytecode without changing the Solidity interface:
+
+| Artifact            |                                             Goal 04 default metadata |                                          Verification-ready metadata |
+| ------------------- | -------------------------------------------------------------------: | -------------------------------------------------------------------: |
+| Creation size       |                                                          1,982 bytes |                                                          1,941 bytes |
+| Creation Keccak-256 | `0xb444188cc36e6de73eebb97819f55b73f71779a15eee3702b3d9e4d4519af4f5` | `0x706e4c801220888e7d5329a28d5082c093ecf2bb917eb3a65081bd05fb71e401` |
+| Runtime size        |                                                          1,954 bytes |                                                          1,913 bytes |
+| Runtime Keccak-256  | `0x8dbdd82bd54c3b6235b134298a7ae22f02ad44d0462011b88d0acd5f07361e8a` | `0xfbd38ff7e797a7c959d4d55b2eb6dd3987640e60bb97ffbb5b838b0021aeefae` |
+
+Both bytecode forms use Solidity `0.8.30`, optimizer runs `200`, and EVM version `osaka`; only compiler metadata settings changed. The exact exported ABI remains unchanged at SHA-256 `e3620a954c3e3426a244cac025af41afd2bbfb116eecafb7dad6e186cdb50165`. These are local compiler-artifact fingerprints, not deployed-code or verification claims.
+
 ## Gas snapshot
 
 The committed Foundry snapshot provides regression signals for isolated test actions with optimizer runs set to 200:
 
 | Action                             | Snapshot gas |
 | ---------------------------------- | -----------: |
-| Deploy registry                    |      423,625 |
+| Deploy registry                    |      415,412 |
 | First Attempted anchor             |      137,127 |
 | Linked Site confirmed anchor       |       83,212 |
 | Terminal Authority accepted anchor |       83,210 |

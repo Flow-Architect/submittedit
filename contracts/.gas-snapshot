@@ -1,5 +1,5 @@
 SubmissionReceiptRegistryAcceptedGasTest:testGas_TerminalAuthorityAcceptedAnchor() (gas: 83210)
-SubmissionReceiptRegistryDeploymentGasTest:testGas_DeployRegistry() (gas: 423625)
+SubmissionReceiptRegistryDeploymentGasTest:testGas_DeployRegistry() (gas: 415412)
 SubmissionReceiptRegistryFirstAnchorGasTest:testGas_FirstAttemptedAnchor() (gas: 137127)
 SubmissionReceiptRegistryRejectedGasTest:testGas_TerminalAuthorityRejectedAnchor() (gas: 83284)
 SubmissionReceiptRegistrySiteAnchorGasTest:testGas_LinkedSiteConfirmedAnchor() (gas: 83212)

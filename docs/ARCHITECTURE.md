@@ -2,7 +2,7 @@
 
 ## Foundation scope
 
-Goals 01–04 establish build boundaries, the reusable identity foundation, the deterministic receipt protocol, and its linked Monad registry. The web and extension applications still render neutral engineering shells. No browser capture, encryption, real signing, product workflow, relay, or live contract deployment has been implemented.
+Goals 01–04 establish build boundaries, the reusable identity foundation, the deterministic receipt protocol, and its linked Monad registry. Goal 05 preparation adds reproducible source-verification metadata and an explicit Testnet RPC boundary without deploying anything. The web and extension applications still render neutral engineering shells. No browser capture, encryption, real signing, product workflow, relay, or live contract deployment has been implemented.
 
 ## Workspace boundaries
 
@@ -46,6 +46,8 @@ The contract is permissionless: any address may submit a structurally valid anch
 - Fixed synthetic protocol vectors run in Node and from the built ESM package inside real Chromium. Package runtime code uses no Node-only API.
 - `SubmissionReceiptRegistry` is compiled with pinned Solidity 0.8.30 and enforces the same six transitions as `receipt-core`. Dependency-free Foundry unit, fuzz, stateful invariant, script, event-log, and gas-regression tests cover its append-only behavior.
 - The guarded deployment script accepts only chain ID `10143` and delegates credential selection to Foundry; Goal 04 never broadcasts it. A deterministic Node script exports only the compiled ABI into `packages/contract-client`, and CI rejects drift between that reviewed artifact and Foundry output.
+- Foundry requires an explicit `MONAD_TESTNET_RPC_URL`, pins EVM version `osaka`, embeds literal source metadata without an IPFS bytecode hash, and fails configuration when the RPC variable is absent. CI supplies only Monad's public Testnet endpoint.
+- MonadVision's Sourcify verifier is the primary future source-verification route because it needs no explorer API key. Monadscan/Etherscan remains optional. Neither route has been invoked yet.
 
 ## Receipt protocol boundaries
 
@@ -55,7 +57,7 @@ The linked event chain structurally supports only Attempted, optional Site confi
 
 ## Monad safety boundary
 
-No address is trusted from memory. Goal 04 leaves the registry explicitly undeployed: the repository contains no contract address, transaction hash, deployment block, or explorer claim. Goal 05 must source those values from live deployment output, confirm them against Monad Testnet, use a protected keystore workflow, and explorer-verify the source using current official Monad guidance. Private keys must never be committed or pasted into documentation.
+No address is trusted from memory. The registry remains explicitly undeployed: the repository contains no contract address, transaction hash, deployment block, or explorer claim. Goal 05 must source those values from live deployment output, confirm them against Monad Testnet, use a protected keystore workflow, and verify the source through the documented MonadVision/Sourcify route. Private keys must never be committed or pasted into documentation.
 
 ## Contract, client, relay, and verifier relationship
 

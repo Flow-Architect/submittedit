@@ -41,6 +41,8 @@ jobs:
   contracts:
     name: Monad Foundry checks
     runs-on: ubuntu-latest
+    env:
+      MONAD_TESTNET_RPC_URL: https://testnet-rpc.monad.xyz
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -55,6 +57,29 @@ jobs:
 
       - name: Install Monad Foundry
         run: '"$FOUNDRY_DIR/bin/foundryup" --network monad'
+
+      - name: Check deployment configuration
+        working-directory: contracts
+        run: |
+          if env -u MONAD_TESTNET_RPC_URL "$FOUNDRY_DIR/bin/cast" chain-id --rpc-url monad_testnet > "$RUNNER_TEMP/missing-rpc.txt" 2>&1; then
+            echo "Monad RPC configuration unexpectedly accepted a missing MONAD_TESTNET_RPC_URL."
+            exit 1
+          fi
+          grep --fixed-strings "MONAD_TESTNET_RPC_URL" "$RUNNER_TEMP/missing-rpc.txt"
+          "$FOUNDRY_DIR/bin/forge" config --json > "$RUNNER_TEMP/foundry-config.json"
+          jq --exit-status '
+            .solc == "0.8.30" and
+            .optimizer == true and
+            .optimizer_runs == 200 and
+            .evm_version == "osaka" and
+            .cbor_metadata == true and
+            .bytecode_hash == "none" and
+            .use_literal_content == true and
+            .eth_rpc_url == "monad_testnet" and
+            .rpc_endpoints.monad_testnet == "${MONAD_TESTNET_RPC_URL}"
+          ' "$RUNNER_TEMP/foundry-config.json"
+          "$FOUNDRY_DIR/bin/cast" chain-id --rpc-url monad_testnet > "$RUNNER_TEMP/chain-id.txt"
+          grep --line-regexp "10143" "$RUNNER_TEMP/chain-id.txt"
 
       - name: Check Solidity formatting
         working-directory: contracts
