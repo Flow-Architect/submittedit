@@ -4,8 +4,19 @@ test = "test"
 script = "script"
 out = "out"
 libs = ["lib"]
+solc_version = "0.8.30"
+optimizer = true
+optimizer_runs = 200
 eth-rpc-url = "https://testnet-rpc.monad.xyz"
 chain_id = 10143
 
 [fmt]
 line_length = 100
+
+[invariant]
+runs = 32
+depth = 32
+fail_on_revert = false
+
+[lint]
+exclude_lints = ["multi-contract-file"]

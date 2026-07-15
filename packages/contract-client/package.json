@@ -11,10 +11,16 @@
     }
   },
   "scripts": {
+    "abi:check": "node ../../contracts/scripts/export-abi.mjs --check",
     "build": "tsc --project tsconfig.build.json",
+    "test": "vitest run --config vitest.config.ts",
+    "test:exports": "node test/export-smoke.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "viem": "2.55.2"
+  },
+  "devDependencies": {
+    "vitest": "4.1.10"
   }
 }

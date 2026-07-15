@@ -11,17 +11,19 @@
   "scripts": {
     "dev": "pnpm --parallel --filter @submittedit/web --filter @submittedit/extension dev",
     "build": "pnpm --recursive --if-present build",
+    "contract:abi": "node contracts/scripts/export-abi.mjs",
+    "contract:abi:check": "node contracts/scripts/export-abi.mjs --check",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
     "icons:generate": "node scripts/generate-icons.mjs",
     "icons:check": "node scripts/generate-icons.mjs --check",
     "typecheck": "pnpm --recursive --if-present typecheck",
-    "test": "vitest run && pnpm --filter @submittedit/receipt-core test",
+    "test": "vitest run && pnpm --filter @submittedit/receipt-core test && pnpm --filter @submittedit/contract-client test",
     "test:browser-parity": "pnpm --filter @submittedit/receipt-core build && pnpm --filter @submittedit/receipt-core test:exports && playwright test --config playwright.receipt-core.config.ts",
     "test:e2e": "playwright test && pnpm test:browser-parity && pnpm --filter @submittedit/web typegen",
     "secrets:check": "node scripts/check-secrets.mjs",
-    "check": "pnpm format:check && pnpm icons:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm test:browser-parity && pnpm secrets:check"
+    "check": "pnpm format:check && pnpm icons:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @submittedit/contract-client test:exports && pnpm test:browser-parity && pnpm secrets:check"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

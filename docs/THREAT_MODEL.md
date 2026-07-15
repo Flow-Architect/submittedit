@@ -1,0 +1,67 @@
+# SubmittedIt threat model
+
+## Scope
+
+This document covers the current receipt protocol and Goal 04 `SubmissionReceiptRegistry` boundary. It is not a professional security audit. The registry is compiled and tested but not deployed; browser capture, signing, encryption, relay, hosted storage, verifier behavior, and live-chain confirmation remain future implementation work.
+
+The protected properties are:
+
+- deterministic event fingerprints remain linked in the allowed order;
+- the same event fingerprint cannot be anchored twice;
+- the established extension-key fingerprint cannot silently change;
+- authority stages cannot omit an authority-key fingerprint or attach one to non-authority evidence;
+- current state cannot be edited, deleted, or moved after a terminal outcome; and
+- private receipt contents never enter contract inputs, state, logs, or errors.
+
+## Trust boundaries
+
+`receipt-core` defines and hashes immutable evidence. A future extension signs events. A future relay validates requests and submits transactions. Monad orders confirmed transactions. A future verifier independently recomputes hashes/signatures/linkage and compares them with canonical-chain state and logs.
+
+The contract trusts none of those actors for real-world truth. It validates only fixed-size arguments and stored lifecycle structure. Any address can call it, and transaction sender, extension-key identity, authority-key identity, receipt subject, website, and real-world authority are distinct concepts.
+
+## Contract threats and controls
+
+| Threat                                                             | Current control                                                                                                                              | Residual risk / required future handling                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Duplicate anchoring or replay                                      | A global event-hash mapping rejects reuse across every receipt, sender, and stage.                                                           | A semantically new malicious hash is not a duplicate; signed evidence must still verify.                                                                                                                                                                                                 |
+| Wrong or stale previous hash                                       | First events require zero; later events require the exact nonzero stored tip.                                                                | Concurrent submissions can race. Relays must preflight and reconcile the mined result.                                                                                                                                                                                                   |
+| Invalid, backward, or duplicate stage                              | Stored state—not caller state—selects one of six transitions; authority outcomes are terminal. ABI decoding rejects malformed enum integers. | A structurally valid stage says nothing about the truth of its offchain evidence.                                                                                                                                                                                                        |
+| Forged offchain evidence                                           | The contract stores only the event fingerprint and never claims to verify its preimage.                                                      | Verifiers must recompute the canonical event hash and validate applicable signatures before trusting it.                                                                                                                                                                                 |
+| Malicious or compromised relay                                     | Permissionless calls prevent a single configured relayer from becoming a contract owner; all senders are logged.                             | A relay can submit false fingerprints or wrong transactions. Clients must sign requests, validate inputs, and verify canonical-chain output independently.                                                                                                                               |
+| Receipt-ID discovery, front-running, or terminal denial of service | High-entropy runtime receipt IDs and globally unique event hashes are required; invalid links and key changes revert.                        | The contract cannot verify signatures, so an attacker who learns a receipt ID and key fingerprint may race a structurally valid event. Verification detects untrusted evidence but immutability prevents erasure. Relays should submit promptly, preflight state, and surface conflicts. |
+| Extension-key substitution                                         | Attempted establishes a nonzero hash; every linked event must match it.                                                                      | The contract cannot prove who controls the underlying key. The verifier must bind the hash to a valid extension public key and signatures. MVP key rotation is unsupported.                                                                                                              |
+| Missing or false authority-key evidence                            | Terminal authority stages require nonzero; non-authority stages require zero.                                                                | A nonzero hash does not authenticate an authority. Accepted/Rejected display still requires a verified authority signature and known authority key.                                                                                                                                      |
+| Public metadata leakage                                            | Inputs and logs are limited to opaque hashes, enum, counter, timestamp, and sender. No arbitrary bytes/string payload exists.                | Hashes, sender reuse, timing, stage, and event count can correlate activity. Users must not hash low-entropy private values directly or reuse receipt IDs.                                                                                                                               |
+| Transaction-sender confusion                                       | Documentation and event naming call the value `anchoredBy`; no ownership or authority power follows from it.                                 | Interfaces must never label it as filer, owner, extension, website, or authority without separate proof.                                                                                                                                                                                 |
+| Incorrectly anchored fingerprint                                   | Checks-effects-interactions, typed validation, and no external calls reduce partial-update risk. There is no edit/delete/admin path.         | A successful bad anchor is permanent. Products must show verification failure/conflict, never rewrite history or pretend it was corrected.                                                                                                                                               |
+| Admin compromise or upgrade substitution                           | No owner, role, proxy, upgrade, pause, withdrawal, token, or fee logic exists.                                                               | Bugs cannot be patched in place. A future replacement requires a new verified deployment and explicit version/address migration.                                                                                                                                                         |
+| Reentrancy or external-call manipulation                           | `anchorEvent` performs validation, then state effects, then an event; it makes no external call.                                             | Foundry's deployment cheatcode exists only in the script, not runtime bytecode.                                                                                                                                                                                                          |
+| Counter or timestamp truncation                                    | Valid lifecycle depth bounds count to three; timestamp conversion checks the `uint64` limit before writing.                                  | Block timestamps are validator-influenced within protocol bounds and are not precise real-world clocks.                                                                                                                                                                                  |
+| RPC disagreement                                                   | Contract-client request construction performs no RPC trust decision.                                                                         | Verifiers must use the intended chain ID/address, cross-check trustworthy providers when needed, and fail closed on disagreement.                                                                                                                                                        |
+| Indexer disagreement or missed logs                                | Current tip/count are readable directly from contract storage; logs contain reconstructable history.                                         | An indexer can lag, omit, or reorder its view. Compare logs with direct reads and transaction receipts before declaring verification.                                                                                                                                                    |
+| Chain reorganization                                               | No unconfirmed transaction is treated as final by the contract-client.                                                                       | Later relay/verifier work must wait for an explicit confirmation policy and invalidate orphaned transaction metadata.                                                                                                                                                                    |
+| Onchain timestamp overclaim                                        | The event names it anchoring time, and product docs prohibit acceptance/timeliness claims.                                                   | It is not the website's local time, authority acknowledgment time, filing deadline proof, or legally conclusive delivery evidence.                                                                                                                                                       |
+
+## Private-data boundary
+
+The contract ABI accepts five `bytes32` values and one enum. Its event adds sender, timestamp, count, and numeric version. It cannot accept or emit raw form fields, names, email addresses, phone numbers, street addresses, URLs, page/confirmation text, file contents or metadata, encrypted receipt blobs, signatures, or arbitrary user metadata.
+
+Hashes are not automatically private. A hash of predictable content can be guessed by dictionary attack, and public linkage can reveal patterns. Event hashes must remain domain-separated fingerprints of the full canonical Goal 03 event core; receipt IDs must be independently high entropy; key hashes must fingerprint actual keys rather than user data. Raw evidence and keys remain offchain.
+
+## Unsupported claims
+
+Neither the contract nor an onchain event verifies:
+
+- IRS or other agency acceptance;
+- tax compliance or legal delivery;
+- filing timeliness or liability;
+- website honesty or successful processing;
+- the actual receipt contents without recomputation;
+- user, filer, extension, or transaction-sender identity; or
+- authority identity without offchain signature and key verification.
+
+Only a verified authoritative acknowledgment may support Accepted or Rejected. Attempted and Site confirmed remain Pending acceptance. Any failed applicable check must surface Verification failed rather than an optimistic state.
+
+## Validation evidence and remaining review
+
+Goal 04 uses compiler warnings, Foundry lint, explicit event/error tests, 256-run fuzz cases, 32-run stateful invariant campaigns with 1,024 calls each, deterministic ABI comparisons, client compatibility tests, and manual source/storage review. No external analyzer was already installed, so Slither/Mythril results are not claimed. A future production deployment would warrant independent review beyond hackathon testing.

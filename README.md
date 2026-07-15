@@ -20,9 +20,9 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 03 protocol foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak hashing, linked lifecycle validation, capture exclusions, fixed synthetic vectors, real-Chromium parity tests, the reviewed identity system, buildable application shells, and CI. Browser capture, encryption, real signing/verification, contract logic, deployment, and product workflows are not implemented yet.
+The repository currently contains the Goal 04 integrity foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity registry, a generated typed contract-client boundary, fixed Node/Chromium vectors, the reviewed identity system, buildable application shells, and CI. Browser capture, encryption, real signing/verification, contract deployment, and product workflows are not implemented yet.
 
-See [the product contract](docs/PRODUCT_CONTRACT.md), [receipt protocol](docs/RECEIPT_SCHEMA.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
+See [the product contract](docs/PRODUCT_CONTRACT.md), [receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md), [threat model](docs/THREAT_MODEL.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
 
 ## Workspace
 
@@ -30,9 +30,9 @@ See [the product contract](docs/PRODUCT_CONTRACT.md), [receipt protocol](docs/RE
 apps/web                 Next.js hosted application shell
 apps/extension           WXT React Manifest V3 extension shell
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
-packages/contract-client Monad network and future contract-client boundary
+packages/contract-client Generated registry ABI and strict anchor projection
 packages/ui              Shared identity metadata, CSS tokens, and brand assets
-contracts                Empty Monad Foundry project
+contracts                Linked lifecycle registry, tests, deploy and ABI tooling
 ```
 
 The workspace uses pnpm directly without an additional monorepo orchestrator. See [CONTRIBUTING.md](CONTRIBUTING.md) for quality expectations.
@@ -72,11 +72,15 @@ pnpm install --frozen-lockfile
 pnpm check
 pnpm test:e2e
 cd contracts
+forge fmt --check
 forge build
-forge test
+forge test -vvv
+forge snapshot --check --match-test '^testGas_'
+cd ..
+pnpm contract:abi:check
 ```
 
-`pnpm check` runs formatting, deterministic icon verification, linting, strict type-checking, unit tests, all workspace builds, real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the neutral web-foundation check plus the browser parity check. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark.
+`pnpm check` runs formatting, deterministic icon verification, linting, strict type-checking, unit tests, all workspace builds and package export smoke checks, real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the neutral web-foundation check plus the browser parity check. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a contract build, `pnpm contract:abi` regenerates the reviewed ABI and `pnpm contract:abi:check` proves it still matches compiler output.
 
 Copy only the environment example relevant to the component you are running. The committed examples contain public development defaults and no credentials.
 
@@ -90,7 +94,7 @@ This starts the Next.js and WXT development processes together. Run one shell in
 
 ## Monad and Monskills
 
-The contract foundation targets Monad Testnet chain ID `10143`. Raw private form values are never intended for the chain. No wallet, private key, contract address, or deployment is required for this goal.
+The guarded contract tooling targets Monad Testnet chain ID `10143`. Raw private form values cannot enter the registry interface. Goal 04 created no wallet, private key, contract address, transaction, or deployment; those runtime details must come only from the later live deployment goal.
 
 Official Monskills guidance was used only for scaffold boundaries, verified network/address handling, future wallet/deployment safety, and future explorer verification. The committed `.monskills` marker records the testnet target; locally installed skill files are not copied into this repository.
 

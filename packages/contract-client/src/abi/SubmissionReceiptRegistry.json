@@ -1,0 +1,328 @@
+[
+  {
+    "type": "function",
+    "name": "PROTOCOL_VERSION",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint16",
+        "internalType": "uint16"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "anchorEvent",
+    "inputs": [
+      {
+        "name": "receiptId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "eventHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "previousEventHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "extensionKeyHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "authorityKeyHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "stage",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "getReceipt",
+    "inputs": [
+      {
+        "name": "receiptId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "currentStage",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      },
+      {
+        "name": "latestEventHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "extensionKeyHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "updatedAt",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "eventCount",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "isAnchored",
+    "inputs": [
+      {
+        "name": "eventHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "anchored",
+        "type": "bool",
+        "internalType": "bool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "event",
+    "name": "ReceiptEventAnchored",
+    "inputs": [
+      {
+        "name": "receiptId",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "eventHash",
+        "type": "bytes32",
+        "indexed": true,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "anchoredBy",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "previousEventHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "extensionKeyHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "authorityKeyHash",
+        "type": "bytes32",
+        "indexed": false,
+        "internalType": "bytes32"
+      },
+      {
+        "name": "stage",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      },
+      {
+        "name": "anchoredAt",
+        "type": "uint64",
+        "indexed": false,
+        "internalType": "uint64"
+      },
+      {
+        "name": "eventCount",
+        "type": "uint32",
+        "indexed": false,
+        "internalType": "uint32"
+      },
+      {
+        "name": "protocolVersion",
+        "type": "uint16",
+        "indexed": false,
+        "internalType": "uint16"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "DuplicateEventHash",
+    "inputs": [
+      {
+        "name": "eventHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ExtensionKeyMismatch",
+    "inputs": [
+      {
+        "name": "expected",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "provided",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "IncorrectPreviousEventHash",
+    "inputs": [
+      {
+        "name": "expected",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "provided",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidInitialStage",
+    "inputs": [
+      {
+        "name": "provided",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidTransition",
+    "inputs": [
+      {
+        "name": "current",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      },
+      {
+        "name": "requested",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "MissingAuthorityKeyHash",
+    "inputs": [
+      {
+        "name": "stage",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TerminalReceipt",
+    "inputs": [
+      {
+        "name": "current",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TimestampOverflow",
+    "inputs": [
+      {
+        "name": "timestamp",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnexpectedAuthorityKeyHash",
+    "inputs": [
+      {
+        "name": "stage",
+        "type": "uint8",
+        "internalType": "enum SubmissionReceiptRegistry.ReceiptStage"
+      },
+      {
+        "name": "provided",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnexpectedPreviousEventHash",
+    "inputs": [
+      {
+        "name": "provided",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ZeroEventHash",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroExtensionKeyHash",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroPreviousEventHash",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroReceiptId",
+    "inputs": []
+  }
+]

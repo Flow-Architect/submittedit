@@ -60,10 +60,22 @@ jobs:
         working-directory: contracts
         run: '"$FOUNDRY_DIR/bin/forge" fmt --check'
 
+      - name: Lint Solidity
+        working-directory: contracts
+        run: '"$FOUNDRY_DIR/bin/forge" lint'
+
       - name: Build contracts
         working-directory: contracts
-        run: '"$FOUNDRY_DIR/bin/forge" build'
+        run: '"$FOUNDRY_DIR/bin/forge" build --force'
+
+      - name: Verify generated contract ABI
+        working-directory: contracts
+        run: node scripts/export-abi.mjs --check
 
       - name: Test contracts
         working-directory: contracts
         run: '"$FOUNDRY_DIR/bin/forge" test'
+
+      - name: Check gas snapshot
+        working-directory: contracts
+        run: '"$FOUNDRY_DIR/bin/forge" snapshot --check --match-test "^testGas_"'
