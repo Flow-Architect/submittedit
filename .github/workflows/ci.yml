@@ -14,6 +14,23 @@ jobs:
   workspace:
     name: Workspace quality gates
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/submittedit_test
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/submittedit_test
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: submittedit_test
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d submittedit_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -35,8 +52,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Apply demo database migrations
+        run: pnpm --filter @submittedit/web db:migrate
+
       - name: Run workspace checks
         run: pnpm check
+
+      - name: Run browser end-to-end checks
+        run: pnpm test:e2e
 
   contracts:
     name: Monad Foundry checks

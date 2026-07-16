@@ -19,6 +19,10 @@ const rules = [
     pattern: /(?:^|\n)\s*(?:DEPLOYER_)?PRIVATE_KEY\s*=\s*(?:0x)?[a-fA-F0-9]{64}\s*(?:\n|$)/,
   },
   {
+    label: "demo authority private-key assignment",
+    pattern: /SUBMITTEDIT_DEMO_AUTHORITY_PRIVATE_KEY\s*=\s*[A-Za-z0-9_-]{80,}/,
+  },
+  {
     label: "seed phrase assignment",
     pattern: /(?:^|\n)\s*(?:MNEMONIC|SEED_PHRASE)\s*=\s*[a-z]+(?:\s+[a-z]+){7,}/i,
   },

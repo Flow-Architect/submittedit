@@ -2,13 +2,19 @@
 
 ## Foundation scope
 
-Goals 01–04 establish build boundaries, the reusable identity foundation, the deterministic receipt protocol, and its linked Monad registry. Goal 05 deploys that immutable registry on Monad Testnet, verifies its source/runtime match, records deterministic public metadata, and adds an explicit RPC/read boundary. The web and extension applications still render neutral engineering shells. No browser capture, encryption, real signing, product workflow, relay, or application-level live-chain verification has been implemented.
+Goals 01–04 establish build boundaries, the reusable identity foundation, the deterministic receipt
+protocol, and its linked Monad registry. Goal 05 deploys that immutable registry on Monad Testnet,
+verifies its source/runtime match, records deterministic public metadata, and adds an explicit
+RPC/read boundary. Goal 06 adds the hosted-compatible fictional filing portal, durable PostgreSQL
+outcomes, and a server-only authority signer for receipt-bound terminal event cores. The extension
+remains a shell. No browser capture, extension signing, receipt encryption, relay, public verifier,
+or application-level live-chain workflow has been implemented.
 
 ## Workspace boundaries
 
 | Path                       | Responsibility                                                                          | May depend on                               |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `apps/web`                 | Future hosted product, demo portal, verifier, APIs, and relay                           | shared packages                             |
+| `apps/web`                 | Fictional filing portal and authority APIs; future verifier and relay                   | shared packages                             |
 | `apps/extension`           | Future Manifest V3 extension and browser-side lifecycle capture                         | browser-safe shared packages                |
 | `packages/receipt-core`    | Canonical receipt schemas, event hashing, lifecycle and capture rules                   | `@noble/hashes`; browser-safe APIs only     |
 | `packages/contract-client` | Generated registry ABI/deployment metadata, stage mapping, and strict anchor projection | `viem`; reviewed public deployment manifest |
@@ -25,7 +31,12 @@ The extension will own decrypted receipt contents, local identity keys, per-rece
 
 ### Hosted services
 
-The web application may later store encrypted blobs, relay state, transaction metadata, synthetic demo-submission state, and abuse-prevention data. Raw extension-captured form values must not enter server logs.
+The web application stores synthetic Goal 06 demo submissions, status histories, and receipt-bound
+authority signatures in PostgreSQL. It stores only a SHA-256 digest of each opaque public status
+token. The authority private key comes from server deployment secrets and never enters PostgreSQL,
+API responses, logs, or client bundles. The web application may later store encrypted blobs, relay
+state, transaction metadata, and narrowly scoped abuse-prevention data. Raw extension-captured form
+values must not enter server logs.
 
 ### Monad Testnet
 
@@ -38,8 +49,14 @@ The contract is permissionless: any address may submit a structurally valid anch
 - pnpm workspaces provide dependency and script orchestration without another monorepo layer.
 - Strict TypeScript is shared from `tsconfig.base.json`; the ES2022 target supports viem's BigInt usage.
 - Next.js uses the App Router, and WXT produces the Chrome Manifest V3 foundation.
-- Vitest covers deterministic unit and configuration checks. Playwright verifies the served web shell over HTTP and reproduces receipt vectors from the built ESM package in real Chromium.
-- CI repeats frozen installation, the root quality gate, and Monad Foundry formatting/build/test commands.
+- The Goal 06 data layer uses parameterized `postgres` tagged templates against PostgreSQL 17.
+  Migration `0001_demo_filing` is applied transactionally and recorded in `schema_migrations`.
+- Vitest covers deterministic unit, cryptographic, migration, and PostgreSQL integration checks.
+  Playwright verifies the real portal/API lifecycle over HTTP and reproduces receipt vectors from
+  the built ESM package in real Chromium.
+- CI provisions a dedicated non-secret PostgreSQL service, applies migrations, repeats the root
+  quality gate and browser scenarios, and runs Monad Foundry formatting/build/test commands in a
+  separate job.
 - Monad Foundry is installed through Monad's official fork and initialized with its native `--network monad` configuration.
 - The `packages/ui` package exports identity metadata and a token stylesheet without coupling either application to a component framework. Its canonical self-contained SVG mark deterministically produces the committed WXT extension PNG icons through a dependency-free Node script.
 - `packages/receipt-core` normalizes strict protocol inputs, hashes immutable event cores with domain-separated Keccak-256, recomputes linked lifecycle stages, and derives conservative display status from separate verification state. Its only runtime dependency is the audited, zero-dependency, browser-compatible `@noble/hashes` implementation already resolved in the workspace.
@@ -56,6 +73,23 @@ An event core holds immutable evidence. Its envelope holds the resulting hash, s
 
 The linked event chain structurally supports only Attempted, optional Site confirmed, then an optional terminal Authority accepted or Authority rejected event. Receipt validation recomputes this stage and rejects optimistic caller state. Accepted and Rejected user statuses additionally require a verified authority-signature check. See [the receipt protocol](RECEIPT_SCHEMA.md) and [canonicalization decision](DECISIONS/0003-receipt-canonicalization.md).
 
+## Fictional demo authority boundary
+
+`SubmittedIt Civic Filing Lab` (`submittedit-demo-authority`) is unmistakably fictional. The portal
+accepts only reviewed synthetic fields and three explicit scenarios. A standard form POST creates a
+unique PostgreSQL row and returns an opaque status URL. The initial status snapshot remains Queued;
+the status API performs a lazy transition under `SELECT ... FOR UPDATE`, stores one history entry,
+and makes Pending or terminal outcome fields immutable. This avoids a background-job dependency
+while remaining safe under concurrent reads and application restarts.
+
+The portal does not create an extension-style Attempted event. After a terminal outcome exists, a
+later client may POST one proposed `AuthorityEventCore` to the receipt-bound signing endpoint. The
+server strictly parses it with `receipt-core`, matches every acknowledgment field to the persisted
+outcome, recomputes `hashEventCore`, creates the Goal 03 authority-signature payload, and signs with
+ECDSA P-256/SHA-256 using P1363 base64url encoding. The first valid receipt binding is persisted;
+exact retries return the same envelope and conflicting cores are rejected. See
+[the demo portal guide](DEMO_PORTAL.md).
+
 ## Monad safety boundary
 
 No address is trusted from memory. The public manifest records the deployed address, transaction, block, runtime hash, source-verification result, and official explorer routes only after independent live RPC checks. `@submittedit/contract-client` consumes generated metadata from that manifest rather than repeating an unrelated hardcoded address. Private keys, passwords, keystores, wallet paths, Foundry cache, and broadcast output remain outside Git.
@@ -68,4 +102,12 @@ The Goal 03 event core remains the evidence source of truth. `receipt-core` reco
 
 `contract-client` exports the verified chain/address/read configuration and deployment metadata generated from the manifest. It strictly accepts exactly those projection fields, validates their Monad Testnet and bytes32 encoding, preserves schema/chain/address metadata in the returned request, maps event stages to the fixed Solidity enum, and adds the established extension-key and applicable authority-key fingerprints. Prepared and Verification failed cannot become contract events. Key fingerprints are not signatures, and Goal 05 does not invent a production public-key derivation rule that Goal 03 did not define.
 
-A future relay will verify signed evidence before submitting this request and will track confirmation without changing the event core. A future verifier will independently recompute the event and signature checks, compare the expected linkage and stage with confirmed contract state/logs, and account for chain confirmation. The contract alone cannot make Accepted or Rejected truthful; those displayed outcomes additionally require a verified authority signature. See [the contract reference](CONTRACT.md) and [threat model](THREAT_MODEL.md).
+A future extension will create the Attempted/Site confirmed receipt chain and may request the Goal
+06 fictional authority's signature only after constructing a matching terminal event core. A future
+relay will verify signed evidence before submitting its anchor request and will track confirmation
+without changing the event core. A future verifier will independently recompute the event and
+signature checks, compare the expected linkage and stage with confirmed contract state/logs, and
+account for chain confirmation. Goal 06 performs no Monad transaction. The contract alone cannot
+make Accepted or Rejected truthful; those displayed receipt outcomes additionally require a
+verified authority signature. See [the contract reference](CONTRACT.md) and
+[threat model](THREAT_MODEL.md).

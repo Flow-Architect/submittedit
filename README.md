@@ -20,9 +20,23 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 05 integrity and deployment foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity registry deployed and source-verified on Monad Testnet, a reviewed deployment manifest, an environment-driven RPC boundary, a generated typed contract-client read boundary, fixed Node/Chromium vectors, the reviewed identity system, buildable application shells, and CI. Browser capture, encryption, real signing/verification, relay behavior, and product workflows are not implemented yet.
+The repository currently contains the Goal 06 integrity, deployment, and fictional-portal
+foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak
+hashing, linked lifecycle validation, a tested append-only Solidity registry deployed and
+source-verified on Monad Testnet, a reviewed deployment manifest, a generated typed contract-client
+read boundary, fixed Node/Chromium vectors, the reviewed identity system, and a dynamic PostgreSQL
+demo portal with durable queued, Accepted, Rejected, and Pending outcomes. The fictional authority
+can produce real receipt-bound P-256 signatures for matching terminal event cores. Browser capture,
+extension signing, encryption, relay behavior, public verification, and production product
+workflows are not implemented yet.
 
-See [the product contract](docs/PRODUCT_CONTRACT.md), [receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md), [deployment runbook](docs/DEPLOYMENT.md), [threat model](docs/THREAT_MODEL.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
+See [the demo portal guide](docs/DEMO_PORTAL.md), [product contract](docs/PRODUCT_CONTRACT.md),
+[receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md),
+[deployment runbook](docs/DEPLOYMENT.md), [threat model](docs/THREAT_MODEL.md),
+[design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md),
+[reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md),
+[architecture](docs/ARCHITECTURE.md), and
+[hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
 
 ## Live Monad Testnet deployment
 
@@ -40,7 +54,7 @@ The public manifest is [`deployments/monad-testnet.json`](deployments/monad-test
 ## Workspace
 
 ```text
-apps/web                 Next.js hosted application shell
+apps/web                 Next.js fictional filing portal, PostgreSQL APIs, and authority signer
 apps/extension           WXT React Manifest V3 extension shell
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Generated registry ABI and strict anchor projection
@@ -60,6 +74,7 @@ The foundation is locked and validated with:
 - Next.js `16.2.10` and React `19.2.7`
 - WXT `0.20.27`
 - Vitest `4.1.10` and Playwright `1.61.1`
+- PostgreSQL `17` for the dynamic demo path
 - Google Chrome or Chromium for real-browser receipt-core parity (`CHROME_PATH` overrides `/usr/bin/google-chrome`)
 - Monad Foundry `1.7.1-monad-v1.0.0`
 - Git `2.55.0`
@@ -82,6 +97,8 @@ foundryup --network monad
 
 ```bash
 pnpm install --frozen-lockfile
+export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/submittedit_test
+export TEST_DATABASE_URL=$DATABASE_URL
 pnpm check
 pnpm test:e2e
 pnpm contract:deployment:check
@@ -95,17 +112,35 @@ cd ..
 pnpm contract:abi:check
 ```
 
-`pnpm check` validates the deterministic deployment manifest/client export, formatting, icons, linting, strict types, unit tests, all workspace builds and package exports, real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the neutral web-foundation check plus the browser parity check. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a contract build, `pnpm contract:abi` regenerates the reviewed ABI and `pnpm contract:abi:check` proves it still matches compiler output.
+`pnpm check` validates the deterministic deployment manifest/client export, formatting, icons,
+linting, strict types, PostgreSQL web tests, all workspace builds and package exports,
+real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the filing
+portal scenarios, web entry-point check, browser parity check, and Next route type generation. A
+real PostgreSQL database is required for both commands. See
+[the demo portal guide](docs/DEMO_PORTAL.md) for container, migration, key, reset, and test setup.
+Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a
+contract build, `pnpm contract:abi` regenerates the reviewed ABI and
+`pnpm contract:abi:check` proves it still matches compiler output.
 
 Copy only the environment example relevant to the component you are running. The committed examples contain public development defaults and no credentials. Foundry deliberately has no implicit RPC fallback: export `MONAD_TESTNET_RPC_URL` in each clean shell before a contract command, and never commit a real `.env` file.
 
 ## Local development
 
 ```bash
+pnpm --filter @submittedit/web authority:keygen -- .env.development.local
+export DATABASE_URL=postgresql://submittedit:local-development-only@127.0.0.1:5432/submittedit
+export SUBMITTEDIT_APP_ORIGIN=http://127.0.0.1:3000
+set -a
+. apps/web/.env.development.local
+set +a
+pnpm --filter @submittedit/web db:migrate
 pnpm dev
 ```
 
-This starts the Next.js and WXT development processes together. Run one shell independently with `pnpm --filter @submittedit/web dev` or `pnpm --filter @submittedit/extension dev`.
+This starts the Next.js and WXT development processes together. The key command is
+development-only, refuses tracked or existing paths, and writes mode `0600` without printing the
+private key. Run one application independently with `pnpm --filter @submittedit/web dev` or
+`pnpm --filter @submittedit/extension dev`.
 
 ## Monad and Monskills
 

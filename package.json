@@ -21,9 +21,9 @@
     "icons:generate": "node scripts/generate-icons.mjs",
     "icons:check": "node scripts/generate-icons.mjs --check",
     "typecheck": "pnpm --recursive --if-present typecheck",
-    "test": "vitest run && pnpm --filter @submittedit/receipt-core test && pnpm --filter @submittedit/contract-client test",
+    "test": "vitest run && pnpm --filter @submittedit/receipt-core test && pnpm --filter @submittedit/contract-client test && pnpm --filter @submittedit/web test",
     "test:browser-parity": "pnpm --filter @submittedit/receipt-core build && pnpm --filter @submittedit/receipt-core test:exports && playwright test --config playwright.receipt-core.config.ts",
-    "test:e2e": "playwright test && pnpm test:browser-parity && pnpm --filter @submittedit/web typegen",
+    "test:e2e": "node scripts/run-e2e.mjs",
     "secrets:check": "node scripts/check-secrets.mjs",
     "check": "pnpm contract:deployment:check && pnpm format:check && pnpm icons:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @submittedit/contract-client test:exports && pnpm test:browser-parity && pnpm secrets:check"
   },
