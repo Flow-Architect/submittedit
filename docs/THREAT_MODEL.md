@@ -2,12 +2,15 @@
 
 ## Scope
 
-This document covers the current receipt protocol, fictional PostgreSQL demo portal and authority
-signer, and deployed `SubmissionReceiptRegistry` boundary. It is not a professional security audit.
+This document covers the current receipt protocol, privacy-first extension shell, fictional
+PostgreSQL demo portal and authority signer, and deployed `SubmissionReceiptRegistry` boundary. It
+is not a professional security audit.
 The registry is compiled, tested, deployed, source/runtime matched through MonadVision/Sourcify,
 and read-validated on Monad Testnet. The demo authority uses real server-side P-256 signatures for
-strictly matching terminal event cores. Browser capture, extension signing, encryption, relay,
-public verifier behavior, and application-level chain confirmation remain future work.
+strictly matching terminal event cores. The extension currently performs only exact-origin
+permission coordination, local settings, and a form-presence probe. Browser submission capture,
+extension signing, encryption, relay, public verifier behavior, and application-level chain
+confirmation remain future work.
 
 The protected properties are:
 
@@ -20,17 +23,39 @@ The protected properties are:
 - concurrent demo status requests cannot create conflicting persisted outcomes;
 - the fictional authority cannot sign Pending, unknown, malformed, or mismatched receipt events;
 - the authority private key never enters public files, PostgreSQL, API responses, or client code;
+- no page probe runs without current exact-origin permission;
+- the Goal 07 probe cannot return form values, control metadata, page text, or receipt data;
+- optional site access can be revoked and does not become install-time blanket host access;
+- malformed local extension state cannot seed a fake receipt or expand permission scope;
 - private receipt contents never enter contract inputs, state, logs, or errors.
 
 ## Trust boundaries
 
-`receipt-core` defines and hashes immutable evidence. The Goal 06 fictional authority signs only a
+`receipt-core` defines and hashes immutable evidence. The Goal 07 service worker trusts Chrome's
+live permission set over stored enabled-origin metadata and runs only a fixed form-count script.
+The Goal 06 fictional authority signs only a
 caller-proposed terminal event core whose acknowledgment exactly matches its PostgreSQL record. A
-future extension signs browser events. A future relay validates requests and submits transactions.
+future extension milestone signs browser events. A future relay validates requests and submits transactions.
 Monad orders confirmed transactions. A future verifier independently recomputes
 hashes/signatures/linkage and compares them with canonical-chain state and logs.
 
 The contract trusts none of those actors for real-world truth. It validates only fixed-size arguments and stored lifecycle structure. Any address can call it, and transaction sender, extension-key identity, authority-key identity, receipt subject, website, and real-world authority are distinct concepts.
+
+## Extension shell threats and controls
+
+| Threat                                 | Current control                                                                                                                                                                         | Residual risk / limitation                                                                                                                         |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Install-time blanket browsing access   | Production has no mandatory host permissions or persistent content script. HTTP/HTTPS patterns are optional capacity only; the UI requests one normalized current origin after a click. | A user can still approve an unintended origin. Browser permission UI and the displayed origin must be reviewed.                                    |
+| Probe before permission                | The worker checks the active supported URL, stored state, and `chrome.permissions.contains()` immediately before `scripting.executeScript`.                                             | A compromised browser can lie about permission state or execute altered extension code.                                                            |
+| Form-value or token capture            | The only injected function returns `location.origin`, `true`, and `document.forms.length`. Source/build audits reject broader DOM APIs; browser fixtures prove fields are unchanged.    | Counting forms reveals that a form exists. Future capture requires a new review and exclusions for passwords, tokens, files, and autofill secrets. |
+| Tab-navigation race                    | Permission results match the original tab ID/origin; probe output origin must equal the expected origin. Mismatch fails closed.                                                         | A fully compromised renderer/browser is outside this protection.                                                                                   |
+| Permission removed outside the panel   | Permission events and every bootstrap reconcile Chrome state, remove stale enabled metadata, and record a revocation only for a previously enabled origin.                              | `activeTab` URL visibility can expire after navigation; the user may need to invoke the action again.                                              |
+| Malformed or overbroad runtime message | Internal sender ID, 8 KiB limit, exact message keys, canonical origins, enums, and bounded numbers are checked before work. There is no external message listener.                      | Bugs in Chrome or WXT message transport remain outside the schema validation.                                                                      |
+| Service-worker suspension loses state  | Settings, origin metadata, revocations, onboarding, migration state, and empty receipt index live in `storage.local`; startup and browser-restart tests reconstruct them.               | An interrupted write or damaged profile resets malformed SubmittedIt state to defaults rather than recovering user choices.                        |
+| Local storage disclosure or tampering  | Goal 07 stores no form/receipt values or keys, limits origin entries, uses trusted-context access where supported, validates every load, and offers delete-all.                         | Chrome local storage is not encrypted; profile/device compromise can read or alter settings and origins.                                           |
+| Fake future receipt state              | The receipt index parser requires an empty array. Future lifecycle labels are typed test vocabulary but unreachable from runtime actions.                                               | Later goals must add real cryptographic and persistence evidence before exposing those views.                                                      |
+| External telemetry or page upload      | Extension runtime performs no fetch, XHR, WebSocket, analytics, or external request. Persistent-Chromium tests fail on unexpected HTTP(S) traffic.                                      | Browser/OS background traffic is outside the extension request boundary.                                                                           |
+| Revocation fails to stop execution     | Revocation removes the exact optional permission, deletes enabled metadata, and a subsequent probe rechecks permission before scripting.                                                | Chrome policy or a compromised extension installation could override expected browser behavior.                                                    |
 
 ## Fictional demo portal threats and controls
 
@@ -85,6 +110,11 @@ receipt-bound public signature data. It does not contain the raw status token, r
 user-agent, IP address, browser fingerprint, authority private key, extension key, database dump, or
 real tax document.
 
+The Goal 07 extension's local record contains only preferences, exact enabled/revoked origins and
+timestamps, onboarding/migration metadata, and an empty receipt array. It contains no form values,
+page text, submission events, keys, signatures, ciphertext, portal token, or Monad data. Chrome
+profile storage is a distinct local boundary and is not claimed to be encrypted.
+
 Hashes are not automatically private. A hash of predictable content can be guessed by dictionary
 attack, and public linkage can reveal patterns. Event hashes must remain domain-separated
 fingerprints of the full canonical Goal 03 event core; receipt IDs must be independently high
@@ -115,4 +145,10 @@ concurrency tests, P-256 signature/tamper tests, request-boundary tests, and rea
 Rejected, Pending, repeated-submission, direct-reopen, malformed-input, and XSS cases. The
 development-only anchor proves structural contract operation only and is not product evidence.
 Goal 06 sends no Monad transaction. No external analyzer or independent security audit is claimed.
-A future production deployment would warrant independent review beyond hackathon testing.
+Goal 07 adds 66 extension unit checks, a production manifest/bundle audit, and a real persistent
+Chromium test covering runtime permissions, form/no-form results, unchanged synthetic values,
+revocation, blocked post-revocation probing, settings/revocation persistence across browser restart,
+empty receipt state, delete-all isolation, no external extension request, and clean startup.
+Native browser-chrome prompt appearance remains a focused manual review because headless page
+automation cannot accept browser toolbar prompts. A future production deployment would warrant
+independent review beyond hackathon testing.

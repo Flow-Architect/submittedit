@@ -15,5 +15,6 @@ const run = (command, args) => {
 };
 
 run("pnpm", ["exec", "playwright", "test", ...process.argv.slice(2)]);
+run("pnpm", ["--filter", "@submittedit/extension", "test:browser"]);
 run("pnpm", ["test:browser-parity"]);
 run("pnpm", ["--filter", "@submittedit/web", "typegen"]);

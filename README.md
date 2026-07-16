@@ -20,17 +20,19 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 06 integrity, deployment, and fictional-portal
-foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak
-hashing, linked lifecycle validation, a tested append-only Solidity registry deployed and
-source-verified on Monad Testnet, a reviewed deployment manifest, a generated typed contract-client
-read boundary, fixed Node/Chromium vectors, the reviewed identity system, and a dynamic PostgreSQL
-demo portal with durable queued, Accepted, Rejected, and Pending outcomes. The fictional authority
-can produce real receipt-bound P-256 signatures for matching terminal event cores. Browser capture,
-extension signing, encryption, relay behavior, public verification, and production product
-workflows are not implemented yet.
+The repository currently contains the Goal 07 integrity, deployment, fictional-portal, and
+privacy-first extension foundation: strict browser-safe receipt/event schemas, deterministic
+canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity
+registry deployed and source-verified on Monad Testnet, a reviewed deployment manifest, a generated
+typed contract-client read boundary, fixed Node/Chromium vectors, the reviewed identity system, a
+dynamic PostgreSQL demo portal with durable queued, Accepted, Rejected, and Pending outcomes, and a
+real Manifest V3 side panel with exact-origin opt-in, revocation, versioned local settings, and a
+form-presence-only probe. The fictional authority can produce real receipt-bound P-256 signatures
+for matching terminal event cores. Browser submission capture, extension signing, encryption,
+relay behavior, public verification, and production product workflows are not implemented yet.
 
-See [the demo portal guide](docs/DEMO_PORTAL.md), [product contract](docs/PRODUCT_CONTRACT.md),
+See [the extension guide](docs/EXTENSION.md), [privacy boundary](docs/PRIVACY.md),
+[the demo portal guide](docs/DEMO_PORTAL.md), [product contract](docs/PRODUCT_CONTRACT.md),
 [receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md),
 [deployment runbook](docs/DEPLOYMENT.md), [threat model](docs/THREAT_MODEL.md),
 [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md),
@@ -55,7 +57,7 @@ The public manifest is [`deployments/monad-testnet.json`](deployments/monad-test
 
 ```text
 apps/web                 Next.js fictional filing portal, PostgreSQL APIs, and authority signer
-apps/extension           WXT React Manifest V3 extension shell
+apps/extension           Privacy-first WXT React Manifest V3 side-panel shell
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Generated registry ABI and strict anchor projection
 packages/ui              Shared identity metadata, CSS tokens, and brand assets
@@ -76,6 +78,7 @@ The foundation is locked and validated with:
 - Vitest `4.1.10` and Playwright `1.61.1`
 - PostgreSQL `17` for the dynamic demo path
 - Google Chrome or Chromium for real-browser receipt-core parity (`CHROME_PATH` overrides `/usr/bin/google-chrome`)
+- Playwright's bundled Chromium for unpacked Manifest V3 tests (`pnpm exec playwright install chromium`)
 - Monad Foundry `1.7.1-monad-v1.0.0`
 - Git `2.55.0`
 
@@ -113,11 +116,14 @@ pnpm contract:abi:check
 ```
 
 `pnpm check` validates the deterministic deployment manifest/client export, formatting, icons,
-linting, strict types, PostgreSQL web tests, all workspace builds and package exports,
-real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the filing
-portal scenarios, web entry-point check, browser parity check, and Next route type generation. A
-real PostgreSQL database is required for both commands. See
-[the demo portal guide](docs/DEMO_PORTAL.md) for container, migration, key, reset, and test setup.
+linting, strict types, extension storage/message/privacy boundaries, PostgreSQL web tests, all
+workspace builds and package exports, the generated extension manifest/output, real-Chromium
+receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the filing portal
+scenarios, real persistent-Chromium extension permission/probe/revoke/restart checks, browser
+parity, web entry-point checks, and Next route type generation. A real PostgreSQL database is
+required for both commands. Install the bundled Chromium once with
+`pnpm exec playwright install chromium`. See [the extension guide](docs/EXTENSION.md) and
+[the demo portal guide](docs/DEMO_PORTAL.md) for local setup and test details.
 Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a
 contract build, `pnpm contract:abi` regenerates the reviewed ABI and
 `pnpm contract:abi:check` proves it still matches compiler output.
@@ -140,7 +146,8 @@ pnpm dev
 This starts the Next.js and WXT development processes together. The key command is
 development-only, refuses tracked or existing paths, and writes mode `0600` without printing the
 private key. Run one application independently with `pnpm --filter @submittedit/web dev` or
-`pnpm --filter @submittedit/extension dev`.
+`pnpm --filter @submittedit/extension dev`. Build and load the reviewed extension through the
+unpacked instructions in [the extension guide](docs/EXTENSION.md).
 
 ## Monad and Monskills
 

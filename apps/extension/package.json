@@ -3,20 +3,28 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
+    "audit:build": "node scripts/audit-build.mjs",
     "dev": "wxt",
     "build": "wxt build",
+    "lint": "eslint . --max-warnings=0",
     "postinstall": "wxt prepare",
+    "test": "vitest run --config vitest.config.ts",
+    "test:browser": "pnpm build && playwright test --config playwright.config.ts",
     "typecheck": "wxt prepare && tsc --noEmit"
   },
   "dependencies": {
+    "@submittedit/ui": "workspace:*",
     "react": "19.2.7",
     "react-dom": "19.2.7"
   },
   "devDependencies": {
+    "@playwright/test": "1.61.1",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
     "@wxt-dev/module-react": "1.2.2",
+    "eslint": "9.39.5",
     "vite": "8.1.4",
+    "vitest": "4.1.10",
     "wxt": "0.20.27"
   }
 }

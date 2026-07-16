@@ -23,7 +23,7 @@ export default defineConfig([
     "**/dist/**",
     "node_modules/**",
     "**/out/**",
-    "playwright-report/**",
-    "test-results/**",
+    "**/playwright-report/**",
+    "**/test-results/**",
   ]),
 ]);
