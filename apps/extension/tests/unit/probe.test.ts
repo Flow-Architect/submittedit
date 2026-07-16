@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { SiteContext } from "../../lib/messages";
-import { authorizePageProbe, minimalPageProbe, parseMinimalProbeResult } from "../../lib/probe";
+import {
+  authorizePageProbe,
+  captureStatusCommand,
+  captureUninstallCommand,
+  parseCapturePageStatus,
+} from "../../lib/probe";
 
 const enabledSite: SiteContext = {
   kind: "supported",
@@ -11,7 +16,7 @@ const enabledSite: SiteContext = {
   enabledAt: "2026-07-16T12:00:00.000Z",
 };
 
-describe("privacy-safe page probe", () => {
+describe("permission-scoped capture probe", () => {
   it("authorizes only a supported site with current permission", () => {
     expect(authorizePageProbe(enabledSite, true)).toEqual({
       ok: true,
@@ -33,21 +38,26 @@ describe("privacy-safe page probe", () => {
     ).toEqual({ ok: false, reason: "UNSUPPORTED_PAGE" });
   });
 
-  it("contains no form-value or page-text access capability", () => {
-    const source = minimalPageProbe.toString();
-    expect(source).toContain("document.forms.length");
-    expect(source).not.toMatch(
-      /\.value|FormData|querySelector|textContent|innerText|outerHTML|cookie/u,
-    );
+  it("uses closed status and uninstall commands", () => {
+    expect(captureStatusCommand()).toEqual({
+      type: "SUBMITTEDIT_CAPTURE_COMMAND",
+      command: "STATUS",
+    });
+    expect(captureUninstallCommand()).toEqual({
+      type: "SUBMITTEDIT_CAPTURE_COMMAND",
+      command: "UNINSTALL",
+    });
   });
 
-  it("accepts only origin, reachability, and a bounded form count", () => {
+  it("accepts only a bounded structural page result", () => {
     expect(
-      parseMinimalProbeResult(
+      parseCapturePageStatus(
         {
           origin: "https://example.com",
           reachable: true,
           formCount: 2,
+          hasForm: true,
+          unusuallySensitiveFieldCount: 1,
         },
         "https://example.com",
       ),
@@ -56,24 +66,29 @@ describe("privacy-safe page probe", () => {
       reachable: true,
       formCount: 2,
       hasForm: true,
+      unusuallySensitiveFieldCount: 1,
     });
     expect(
-      parseMinimalProbeResult(
+      parseCapturePageStatus(
         {
           origin: "https://example.com",
           reachable: true,
           formCount: 1,
+          hasForm: true,
+          unusuallySensitiveFieldCount: 0,
           fieldValue: "must not pass",
         },
         "https://example.com",
       ),
     ).toBeNull();
     expect(
-      parseMinimalProbeResult(
+      parseCapturePageStatus(
         {
           origin: "https://other.example",
           reachable: true,
           formCount: 1,
+          hasForm: true,
+          unusuallySensitiveFieldCount: 0,
         },
         "https://example.com",
       ),

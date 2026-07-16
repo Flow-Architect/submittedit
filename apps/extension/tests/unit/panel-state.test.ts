@@ -24,6 +24,7 @@ function snapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
     },
     settings,
     receiptIndexCount: 0,
+    recentReceipts: [],
     ...overrides,
   };
 }
@@ -63,7 +64,7 @@ describe("side-panel state model", () => {
     ).toBe("unavailable");
   });
 
-  it("uses real probe results for no-form and form-detected states", () => {
+  it("uses a real enabled form for Prepared", () => {
     const enabled = snapshot({
       site: {
         kind: "supported",
@@ -80,6 +81,7 @@ describe("side-panel state model", () => {
         reachable: true,
         formCount: 0,
         hasForm: false,
+        unusuallySensitiveFieldCount: 0,
       }).kind,
     ).toBe("no-form");
     expect(
@@ -88,8 +90,33 @@ describe("side-panel state model", () => {
         reachable: true,
         formCount: 2,
         hasForm: true,
+        unusuallySensitiveFieldCount: 1,
       }).kind,
-    ).toBe("form-detected");
+    ).toBe("prepared");
+  });
+
+  it("restores Attempted from a durable receipt summary", () => {
+    const attempted = snapshot({
+      site: {
+        kind: "supported",
+        tabId: 5,
+        origin: "https://example.com",
+        permissionPattern: "https://example.com/*",
+        permissionGranted: true,
+        enabledAt: "2026-07-16T12:00:00.000Z",
+      },
+      receiptIndexCount: 1,
+      recentReceipts: [
+        {
+          receiptId: `0x${"1".repeat(64)}`,
+          eventHash: `0x${"2".repeat(64)}`,
+          capturedAt: "2026-07-16T12:01:00.000Z",
+          origin: "https://example.com",
+          status: "ATTEMPTED",
+        },
+      ],
+    });
+    expect(stateFromSnapshot(attempted)).toMatchObject({ kind: "attempted" });
   });
 
   it("turns a real denied permission result into a recoverable denied state", () => {
@@ -97,13 +124,12 @@ describe("side-panel state model", () => {
     expect(stateAfterPermissionDecision(snapshot(), true).kind).toBe("checking");
   });
 
-  it("keeps later milestone labels typed but outside runtime derivation", () => {
+  it("keeps only later milestone labels outside runtime derivation", () => {
     expect(Object.keys(futurePanelStateLabels).sort()).toEqual([
-      "capturing",
       "chain-anchoring",
       "receipt-pending",
       "verified",
     ]);
-    expect(JSON.stringify(stateFromSnapshot(snapshot()))).not.toContain("capturing");
+    expect(JSON.stringify(stateFromSnapshot(snapshot()))).not.toContain("accepted");
   });
 });

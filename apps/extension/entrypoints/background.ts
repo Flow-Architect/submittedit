@@ -1,7 +1,17 @@
 import { browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
+import { createStoredAttemptReceipt } from "../lib/attempt-receipt";
+import {
+  CAPTURE_CONTENT_SCRIPT_FILE,
+  CAPTURE_CONTENT_SCRIPT_ID,
+  CAPTURE_CONTENT_SCRIPT_PATH,
+  privacySafePageUrl,
+  type CaptureAttemptRequest,
+  type CapturePageErrorRequest,
+} from "../lib/capture";
 import {
   type BackgroundResponse,
+  type CaptureActivityEvent,
   type ExtensionErrorCode,
   type PanelSnapshot,
   parseRuntimeRequest,
@@ -9,8 +19,19 @@ import {
   type SiteContext,
 } from "../lib/messages";
 import { inspectNormalizedOrigin, inspectOrigin } from "../lib/origin";
-import { authorizePageProbe, minimalPageProbe, parseMinimalProbeResult } from "../lib/probe";
-import { addRevokedSite, type ExtensionLocalState } from "../lib/storage-schema";
+import {
+  authorizePageProbe,
+  captureStatusCommand,
+  captureUninstallCommand,
+  parseCapturePageStatus,
+} from "../lib/probe";
+import {
+  addRevokedSite,
+  appendAttemptReceipt,
+  type ExtensionLocalState,
+  recentReceiptSummaries,
+  summarizeAttemptReceipt,
+} from "../lib/storage-schema";
 import {
   deleteAllExtensionData,
   loadExtensionState,
@@ -41,6 +62,8 @@ const localStorageArea: LocalStorageArea = {
   },
 };
 
+let captureWriteQueue: Promise<void> = Promise.resolve();
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -51,7 +74,7 @@ async function loadState(): Promise<ExtensionLocalState> {
   } catch {
     throw new RuntimeFailure(
       "STORAGE_READ_FAILED",
-      "SubmittedIt could not read its local settings. Try reloading the extension.",
+      "SubmittedIt could not read its local settings and receipts. Try reloading the extension.",
       true,
     );
   }
@@ -63,10 +86,19 @@ async function saveState(state: ExtensionLocalState): Promise<ExtensionLocalStat
   } catch {
     throw new RuntimeFailure(
       "STORAGE_WRITE_FAILED",
-      "SubmittedIt could not save its local settings.",
+      "SubmittedIt could not save its local data.",
       true,
     );
   }
+}
+
+function queueCaptureWrite<T>(operation: () => Promise<T>): Promise<T> {
+  const queued = captureWriteQueue.then(operation, operation);
+  captureWriteQueue = queued.then(
+    () => undefined,
+    () => undefined,
+  );
+  return queued;
 }
 
 async function queryActiveTab() {
@@ -79,6 +111,144 @@ function unavailableSite(
   message: string,
 ): SiteContext {
   return { kind: "unavailable", reason, message };
+}
+
+function registrationMatches(state: ExtensionLocalState): string[] {
+  return Object.keys(state.enabledOrigins)
+    .sort()
+    .map((origin) => `${origin}/*`);
+}
+
+async function syncCaptureRegistration(state: ExtensionLocalState): Promise<void> {
+  const existing = await browser.scripting.getRegisteredContentScripts({
+    ids: [CAPTURE_CONTENT_SCRIPT_ID],
+  });
+  const matches = registrationMatches(state);
+  if (matches.length === 0) {
+    if (existing.length > 0) {
+      await browser.scripting.unregisterContentScripts({
+        ids: [CAPTURE_CONTENT_SCRIPT_ID],
+      });
+    }
+    return;
+  }
+
+  const registration = {
+    id: CAPTURE_CONTENT_SCRIPT_ID,
+    js: [CAPTURE_CONTENT_SCRIPT_FILE],
+    matches,
+    persistAcrossSessions: true,
+    runAt: "document_start" as const,
+    world: "ISOLATED" as const,
+  };
+  if (existing.length > 0) {
+    await browser.scripting.updateContentScripts([registration]);
+  } else {
+    await browser.scripting.registerContentScripts([registration]);
+  }
+}
+
+async function injectCaptureScript(tabId: number): Promise<void> {
+  try {
+    await browser.scripting.executeScript({
+      target: { tabId },
+      files: [CAPTURE_CONTENT_SCRIPT_PATH],
+    });
+  } catch {
+    throw new RuntimeFailure(
+      "CAPTURE_INSTALL_FAILED",
+      "SubmittedIt could not attach its reviewed capture listener. Reload the page and try again.",
+      true,
+    );
+  }
+}
+
+async function uninstallCaptureFromTabs(tabs: readonly Browser.tabs.Tab[]): Promise<void> {
+  await Promise.all(
+    tabs.map(async (tab) => {
+      if (typeof tab.id !== "number") {
+        return;
+      }
+      try {
+        await browser.tabs.sendMessage(tab.id, captureUninstallCommand());
+      } catch {
+        // Tabs without the runtime capture script have nothing to remove.
+      }
+    }),
+  );
+}
+
+async function uninstallCaptureForOrigin(permissionPattern: string): Promise<void> {
+  const tabs = await browser.tabs.query({ url: [permissionPattern] });
+  await uninstallCaptureFromTabs(tabs);
+}
+
+async function uninstallCaptureEverywhere(): Promise<void> {
+  const tabs = await browser.tabs.query({});
+  await uninstallCaptureFromTabs(tabs);
+}
+
+async function injectCaptureForEnabledTabs(state: ExtensionLocalState): Promise<void> {
+  for (const origin of Object.keys(state.enabledOrigins)) {
+    const pattern = `${origin}/*`;
+    const permitted = await browser.permissions.contains({ origins: [pattern] });
+    if (!permitted) {
+      continue;
+    }
+    const tabs = await browser.tabs.query({ url: [pattern] });
+    await Promise.all(
+      tabs.map(async (tab) => {
+        if (typeof tab.id !== "number") {
+          return;
+        }
+        try {
+          await injectCaptureScript(tab.id);
+        } catch {
+          // Registration remains active for the next navigation. The panel will
+          // surface a focused error if the current tab is checked.
+        }
+      }),
+    );
+  }
+}
+
+async function reconcileAllPermissions(
+  initialState: ExtensionLocalState,
+): Promise<ExtensionLocalState> {
+  const allPermissions = await browser.permissions.getAll();
+  const granted = new Set<string>();
+  for (const pattern of allPermissions.origins ?? []) {
+    const rawOrigin = pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
+    const inspected = inspectNormalizedOrigin(rawOrigin);
+    if (inspected.ok) {
+      granted.add(inspected.origin);
+    }
+  }
+
+  const enabledOrigins = { ...initialState.enabledOrigins };
+  let settings = initialState.settings;
+  const timestamp = now();
+  let changed = false;
+
+  for (const origin of Object.keys(enabledOrigins)) {
+    if (!granted.has(origin)) {
+      delete enabledOrigins[origin];
+      settings = addRevokedSite(settings, origin, timestamp);
+      changed = true;
+    }
+  }
+  for (const origin of granted) {
+    if (!enabledOrigins[origin]) {
+      enabledOrigins[origin] = { origin, enabledAt: timestamp };
+      settings = {
+        ...settings,
+        revokedSites: settings.revokedSites.filter((site) => site.origin !== origin),
+      };
+      changed = true;
+    }
+  }
+
+  return changed ? saveState({ ...initialState, enabledOrigins, settings }) : initialState;
 }
 
 async function reconcileCurrentSite(
@@ -138,6 +308,7 @@ async function reconcileCurrentSite(
         ),
       },
     });
+    await syncCaptureRegistration(state);
   } else if (!permissionGranted && metadata) {
     const enabledOrigins = { ...initialState.enabledOrigins };
     delete enabledOrigins[inspected.origin];
@@ -146,6 +317,7 @@ async function reconcileCurrentSite(
       enabledOrigins,
       settings: addRevokedSite(initialState.settings, inspected.origin, now()),
     });
+    await syncCaptureRegistration(state);
   }
 
   return {
@@ -168,7 +340,8 @@ async function buildSnapshot(suppliedState?: ExtensionLocalState): Promise<Panel
     welcomeRequired: !state.hasSeenWelcome,
     site,
     settings: state.settings,
-    receiptIndexCount: 0,
+    receiptIndexCount: state.receiptIndex.length,
+    recentReceipts: recentReceiptSummaries(state),
   };
 }
 
@@ -197,12 +370,10 @@ async function probeCurrentSite(): Promise<BackgroundResponse> {
     );
   }
 
-  let injectionResults;
+  await injectCaptureScript(authorization.site.tabId);
+  let rawStatus: unknown;
   try {
-    injectionResults = await browser.scripting.executeScript({
-      target: { tabId: authorization.site.tabId },
-      func: minimalPageProbe,
-    });
+    rawStatus = await browser.tabs.sendMessage(authorization.site.tabId, captureStatusCommand());
   } catch {
     throw new RuntimeFailure(
       "PROBE_FAILED",
@@ -211,7 +382,7 @@ async function probeCurrentSite(): Promise<BackgroundResponse> {
     );
   }
 
-  const result = parseMinimalProbeResult(injectionResults[0]?.result, authorization.site.origin);
+  const result = parseCapturePageStatus(rawStatus, authorization.site.origin);
   if (!result) {
     throw new RuntimeFailure(
       "TAB_NAVIGATED",
@@ -274,6 +445,8 @@ async function handlePermissionResult(
       revokedSites: state.settings.revokedSites.filter((site) => site.origin !== inspected.origin),
     },
   });
+  await syncCaptureRegistration(saved);
+  await injectCaptureScript(request.tabId);
   return { ok: true, snapshot: await buildSnapshot(saved) };
 }
 
@@ -286,6 +459,7 @@ async function revokeCurrentSite(): Promise<BackgroundResponse> {
     return { ok: true, snapshot };
   }
 
+  await uninstallCaptureForOrigin(snapshot.site.permissionPattern);
   const removed = await browser.permissions.remove({
     origins: [snapshot.site.permissionPattern],
   });
@@ -305,10 +479,21 @@ async function revokeCurrentSite(): Promise<BackgroundResponse> {
     enabledOrigins,
     settings: addRevokedSite(state.settings, snapshot.site.origin, now()),
   });
+  await syncCaptureRegistration(saved);
   return { ok: true, snapshot: await buildSnapshot(saved) };
 }
 
 async function removeAllGrantedOrigins(): Promise<void> {
+  await uninstallCaptureEverywhere();
+  const registered = await browser.scripting.getRegisteredContentScripts({
+    ids: [CAPTURE_CONTENT_SCRIPT_ID],
+  });
+  if (registered.length > 0) {
+    await browser.scripting.unregisterContentScripts({
+      ids: [CAPTURE_CONTENT_SCRIPT_ID],
+    });
+  }
+
   const allPermissions = await browser.permissions.getAll();
   const origins = (allPermissions.origins ?? []).filter((pattern) => {
     const withoutWildcard = pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
@@ -326,7 +511,147 @@ async function removeAllGrantedOrigins(): Promise<void> {
   }
 }
 
-async function handleRequest(request: RuntimeRequest): Promise<BackgroundResponse> {
+async function broadcastCaptureActivity(event: CaptureActivityEvent): Promise<void> {
+  try {
+    await browser.runtime.sendMessage(event);
+  } catch {
+    // The side panel may be closed. Durable receipt storage remains authoritative.
+  }
+}
+
+async function authorizeCaptureSender(
+  request: CaptureAttemptRequest | CapturePageErrorRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<void> {
+  const senderUrl = sender.url;
+  if (typeof sender.tab?.id !== "number" || typeof senderUrl !== "string") {
+    throw new RuntimeFailure(
+      "CAPTURE_REJECTED",
+      "SubmittedIt rejected a capture request outside an enabled page.",
+      false,
+    );
+  }
+  const inspected = inspectOrigin(senderUrl);
+  if (!inspected.ok || inspected.origin !== request.origin) {
+    throw new RuntimeFailure(
+      "CAPTURE_REJECTED",
+      "SubmittedIt rejected a capture request with a mismatched page origin.",
+      false,
+    );
+  }
+  if (request.type === "CAPTURE_ATTEMPT" && privacySafePageUrl(senderUrl) !== request.pageUrl) {
+    throw new RuntimeFailure(
+      "CAPTURE_REJECTED",
+      "SubmittedIt rejected a capture request with a mismatched page URL.",
+      false,
+    );
+  }
+  const permissionGranted = await browser.permissions.contains({
+    origins: [inspected.permissionPattern],
+  });
+  const state = await loadState();
+  if (!permissionGranted || !state.enabledOrigins[inspected.origin]) {
+    throw new RuntimeFailure(
+      "PERMISSION_MISSING",
+      "SubmittedIt did not store this attempt because site access is no longer enabled.",
+      true,
+    );
+  }
+}
+
+async function handleCaptureAttempt(
+  request: CaptureAttemptRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<BackgroundResponse> {
+  await authorizeCaptureSender(request, sender);
+  await broadcastCaptureActivity({
+    type: "CAPTURE_ACTIVITY",
+    phase: "CAPTURING",
+    origin: request.origin,
+    receiptId: request.receiptId,
+    capturedAt: request.capturedAt,
+  });
+
+  try {
+    const result = await queueCaptureWrite(async () => {
+      const state = await loadState();
+      const receipt = createStoredAttemptReceipt(request);
+      const appended = appendAttemptReceipt(state, receipt);
+      const saved = appended.deduplicated ? state : await saveState(appended.state);
+      return {
+        saved,
+        receipt: appended.receipt,
+        deduplicated: appended.deduplicated,
+      };
+    });
+    const summary = summarizeAttemptReceipt(result.receipt);
+    await broadcastCaptureActivity({
+      type: "CAPTURE_ACTIVITY",
+      phase: "CAPTURED",
+      receipt: summary,
+      deduplicated: result.deduplicated,
+    });
+    return {
+      ok: true,
+      snapshot: await buildSnapshot(result.saved),
+      capture: {
+        deduplicated: result.deduplicated,
+        receipt: summary,
+      },
+    };
+  } catch (error) {
+    const failure =
+      error instanceof RuntimeFailure
+        ? error
+        : new RuntimeFailure(
+            "CAPTURE_PERSIST_FAILED",
+            "SubmittedIt could not safely persist this submission attempt. No receipt is claimed.",
+            true,
+          );
+    await broadcastCaptureActivity({
+      type: "CAPTURE_ACTIVITY",
+      phase: "ERROR",
+      origin: request.origin,
+      code: failure.code,
+      message: failure.message,
+      capturedAt: request.capturedAt,
+    });
+    throw failure;
+  }
+}
+
+async function handleCapturePageError(
+  request: CapturePageErrorRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<BackgroundResponse> {
+  await authorizeCaptureSender(request, sender);
+  const failure =
+    request.code === "CAPTURE_TOO_LARGE"
+      ? new RuntimeFailure(
+          "CAPTURE_TOO_LARGE",
+          "This form exceeds SubmittedIt’s safe local capture limit. No receipt was created.",
+          true,
+        )
+      : new RuntimeFailure(
+          "FORM_SERIALIZATION_FAILED",
+          "SubmittedIt could not safely serialize this form. No receipt was created.",
+          true,
+        );
+  await broadcastCaptureActivity({
+    type: "CAPTURE_ACTIVITY",
+    phase: "ERROR",
+    origin: request.origin,
+    code: failure.code,
+    message: failure.message,
+    capturedAt: request.capturedAt,
+  });
+  throw failure;
+}
+
+async function handleRequest(
+  request: RuntimeRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<BackgroundResponse> {
   switch (request.type) {
     case "BOOTSTRAP":
       return { ok: true, snapshot: await buildSnapshot() };
@@ -376,6 +701,10 @@ async function handleRequest(request: RuntimeRequest): Promise<BackgroundRespons
       }
       return { ok: true, snapshot: await buildSnapshot(state) };
     }
+    case "CAPTURE_ATTEMPT":
+      return handleCaptureAttempt(request, sender);
+    case "CAPTURE_PAGE_ERROR":
+      return handleCapturePageError(request, sender);
   }
 }
 
@@ -407,6 +736,10 @@ async function updateOriginsFromPermissionEvent(
   if (!origins || origins.length === 0) {
     return;
   }
+  if (!granted) {
+    await uninstallCaptureEverywhere();
+  }
+
   const state = await loadState();
   let changed = false;
   const enabledOrigins = { ...state.enabledOrigins };
@@ -436,13 +769,16 @@ async function updateOriginsFromPermissionEvent(
     }
   }
 
-  if (changed) {
-    await saveState({ ...state, enabledOrigins, settings });
-  }
+  const saved = changed ? await saveState({ ...state, enabledOrigins, settings }) : state;
+  await syncCaptureRegistration(saved);
+  await injectCaptureForEnabledTabs(saved);
 }
 
 async function initializeExtension(): Promise<void> {
-  await loadState();
+  let state = await loadState();
+  state = await reconcileAllPermissions(state);
+  await syncCaptureRegistration(state);
+  await injectCaptureForEnabledTabs(state);
 
   if (browser.storage.local.setAccessLevel) {
     try {
@@ -474,11 +810,7 @@ export default defineBackground({
       if (!browser.sidePanel?.open || typeof tab.windowId !== "number") {
         return;
       }
-      // Call open directly from the action gesture so activeTab access applies
-      // to the page whose exact origin the panel will inspect.
-      void browser.sidePanel.open({ windowId: tab.windowId }).catch(() => {
-        // Chrome owns the panel surface; the next action click can retry safely.
-      });
+      void browser.sidePanel.open({ windowId: tab.windowId }).catch(() => undefined);
     });
     browser.permissions.onAdded.addListener((permissions) => {
       ignoreBackgroundFailure(updateOriginsFromPermissionEvent(permissions.origins, true));
@@ -508,7 +840,7 @@ export default defineBackground({
           },
         });
       }
-      return handleRequest(parsed).catch(failureResponse);
+      return handleRequest(parsed, sender).catch(failureResponse);
     });
   },
 });

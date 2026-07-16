@@ -192,8 +192,9 @@ export default function DemoFilingPage() {
           <h2 id="independent-evidence-title">The portal works without the extension.</h2>
           <p>
             {DEMO_AUTHORITY_NAME} creates its own server record and fictional outcome. The
-            SubmittedIt extension will separately capture independent browser evidence in later
-            goals.
+            SubmittedIt extension can separately record local browser-observed Attempted evidence
+            after you explicitly enable this origin. That evidence is not a portal confirmation or
+            authority acceptance.
           </p>
           <ol className="evidence-steps">
             <li>

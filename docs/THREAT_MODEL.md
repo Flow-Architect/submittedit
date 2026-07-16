@@ -7,10 +7,10 @@ PostgreSQL demo portal and authority signer, and deployed `SubmissionReceiptRegi
 is not a professional security audit.
 The registry is compiled, tested, deployed, source/runtime matched through MonadVision/Sourcify,
 and read-validated on Monad Testnet. The demo authority uses real server-side P-256 signatures for
-strictly matching terminal event cores. The extension currently performs only exact-origin
-permission coordination, local settings, and a form-presence probe. Browser submission capture,
-extension signing, encryption, relay, public verifier behavior, and application-level chain
-confirmation remain future work.
+strictly matching terminal event cores. The extension now performs exact-origin permission
+coordination, native standard-form Attempted capture, canonical event hashing, narrow deduplication,
+and durable local storage. Site-confirmation capture, extension signing, encryption, relay, public
+verifier behavior, and application-level chain confirmation remain future work.
 
 The protected properties are:
 
@@ -23,39 +23,53 @@ The protected properties are:
 - concurrent demo status requests cannot create conflicting persisted outcomes;
 - the fictional authority cannot sign Pending, unknown, malformed, or mismatched receipt events;
 - the authority private key never enters public files, PostgreSQL, API responses, or client code;
-- no page probe runs without current exact-origin permission;
-- the Goal 07 probe cannot return form values, control metadata, page text, or receipt data;
+- no capture listener is registered for an origin without explicit permission;
+- no capture is persisted without current exact-origin permission and a matching page sender;
+- password, token, autofill-secret, and file values never enter capture messages or storage;
+- one physical browser attempt cannot create duplicate local receipts through duplicate DOM events
+  or worker-message retries;
+- a later intentional submission still creates a distinct receipt and event;
+- navigation, refresh, panel closure, and worker/browser restart cannot erase a successfully stored
+  Attempted record;
 - optional site access can be revoked and does not become install-time blanket host access;
-- malformed local extension state cannot seed a fake receipt or expand permission scope;
+- malformed local extension state cannot seed a fake lifecycle/signature/chain claim or expand
+  permission scope;
+- Attempted cannot be displayed as Site confirmed, Accepted, Rejected, verified, or onchain;
 - private receipt contents never enter contract inputs, state, logs, or errors.
 
 ## Trust boundaries
 
-`receipt-core` defines and hashes immutable evidence. The Goal 07 service worker trusts Chrome's
-live permission set over stored enabled-origin metadata and runs only a fixed form-count script.
-The Goal 06 fictional authority signs only a
+`receipt-core` defines and hashes immutable evidence. The extension trusts Chrome's live permission
+set over stored enabled-origin metadata. Its isolated page script uses native FormData to produce a
+privacy-filtered candidate message; the service worker does not trust that message and strictly
+parses it, reapplies capture policy, constructs the exact Attempted core, recomputes the event hash,
+and validates the one-event chain before storage. The Goal 06 fictional authority signs only a
 caller-proposed terminal event core whose acknowledgment exactly matches its PostgreSQL record. A
-future extension milestone signs browser events. A future relay validates requests and submits transactions.
-Monad orders confirmed transactions. A future verifier independently recomputes
+future extension milestone signs browser events. A future relay validates requests and submits
+transactions. Monad orders confirmed transactions. A future verifier independently recomputes
 hashes/signatures/linkage and compares them with canonical-chain state and logs.
 
 The contract trusts none of those actors for real-world truth. It validates only fixed-size arguments and stored lifecycle structure. Any address can call it, and transaction sender, extension-key identity, authority-key identity, receipt subject, website, and real-world authority are distinct concepts.
 
-## Extension shell threats and controls
+## Extension capture threats and controls
 
-| Threat                                 | Current control                                                                                                                                                                         | Residual risk / limitation                                                                                                                         |
-| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Install-time blanket browsing access   | Production has no mandatory host permissions or persistent content script. HTTP/HTTPS patterns are optional capacity only; the UI requests one normalized current origin after a click. | A user can still approve an unintended origin. Browser permission UI and the displayed origin must be reviewed.                                    |
-| Probe before permission                | The worker checks the active supported URL, stored state, and `chrome.permissions.contains()` immediately before `scripting.executeScript`.                                             | A compromised browser can lie about permission state or execute altered extension code.                                                            |
-| Form-value or token capture            | The only injected function returns `location.origin`, `true`, and `document.forms.length`. Source/build audits reject broader DOM APIs; browser fixtures prove fields are unchanged.    | Counting forms reveals that a form exists. Future capture requires a new review and exclusions for passwords, tokens, files, and autofill secrets. |
-| Tab-navigation race                    | Permission results match the original tab ID/origin; probe output origin must equal the expected origin. Mismatch fails closed.                                                         | A fully compromised renderer/browser is outside this protection.                                                                                   |
-| Permission removed outside the panel   | Permission events and every bootstrap reconcile Chrome state, remove stale enabled metadata, and record a revocation only for a previously enabled origin.                              | `activeTab` URL visibility can expire after navigation; the user may need to invoke the action again.                                              |
-| Malformed or overbroad runtime message | Internal sender ID, 8 KiB limit, exact message keys, canonical origins, enums, and bounded numbers are checked before work. There is no external message listener.                      | Bugs in Chrome or WXT message transport remain outside the schema validation.                                                                      |
-| Service-worker suspension loses state  | Settings, origin metadata, revocations, onboarding, migration state, and empty receipt index live in `storage.local`; startup and browser-restart tests reconstruct them.               | An interrupted write or damaged profile resets malformed SubmittedIt state to defaults rather than recovering user choices.                        |
-| Local storage disclosure or tampering  | Goal 07 stores no form/receipt values or keys, limits origin entries, uses trusted-context access where supported, validates every load, and offers delete-all.                         | Chrome local storage is not encrypted; profile/device compromise can read or alter settings and origins.                                           |
-| Fake future receipt state              | The receipt index parser requires an empty array. Future lifecycle labels are typed test vocabulary but unreachable from runtime actions.                                               | Later goals must add real cryptographic and persistence evidence before exposing those views.                                                      |
-| External telemetry or page upload      | Extension runtime performs no fetch, XHR, WebSocket, analytics, or external request. Persistent-Chromium tests fail on unexpected HTTP(S) traffic.                                      | Browser/OS background traffic is outside the extension request boundary.                                                                           |
-| Revocation fails to stop execution     | Revocation removes the exact optional permission, deletes enabled metadata, and a subsequent probe rechecks permission before scripting.                                                | Chrome policy or a compromised extension installation could override expected browser behavior.                                                    |
+| Threat                                       | Current control                                                                                                                                                                                                  | Residual risk / limitation                                                                                                                    |
+| -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| Install-time blanket browsing access         | Production has no mandatory host permissions or manifest-registered capture script. HTTP/HTTPS patterns are optional capacity only; the UI requests one normalized current origin after a click.                 | A user can still approve an unintended origin. Browser permission UI and the displayed origin must be reviewed.                               |
+| Capture registered before permission         | Runtime registration matches only enabled origins reconciled against `chrome.permissions`; the current tab, sender origin, stored enabled metadata, and live permission are checked again before persistence.    | A compromised browser can lie about permission state or execute altered extension code.                                                       |
+| Protected value enters extension messaging   | Native FormData is filtered in the isolated page context. Passwords, sensitive token names, autofill secrets, and files produce metadata-only candidates; strict parsing rejects values on protected candidates. | The protected value exists in the page and browser's native FormData object before filtering; a compromised renderer can observe it.          |
+| File contents or metadata leak               | File entries become only `{ kind: FILE, name }`; receipt-core excludes the control with `FILE_METADATA_NOT_OPTED_IN`. Message/storage/build tests reject bytes and metadata.                                     | A website's own intended multipart submission may still upload the chosen file to that website. SubmittedIt does not control site traffic.    |
+| Disabled/unchecked control overcapture       | The serializer starts from native FormData successful entries and marks disabled/unchecked controls unsuccessful; browser tests prove they are absent.                                                           | Nonstandard site code that rewrites FormData or submission behavior can change what the browser submits.                                      |
+| Malformed or oversized capture message       | Capture messages have exact keys, canonical URLs/origins, 256-field and per-value bounds, a 128 KiB total limit, recomputed fingerprint, protected-value checks, and trusted extension sender validation.        | Very large legitimate forms fail with a truthful no-receipt error.                                                                            |
+| Duplicate DOM events or rapid double-click   | Same-form privacy-filtered fingerprints reuse one random attempt identity for 1.5 seconds; submit/formdata duplicates and rapid repeated submits therefore send the same receipt identity.                       | An intentional repeat inside the narrow window is treated as the same physical attempt; the user can wait and resubmit.                       |
+| Worker-message retry creates a second record | The random attempt ID is persisted; worker writes are serialized, exact retries return the existing receipt, and conflicting identity reuse fails closed.                                                        | Chrome local storage offers no multi-device transaction; the protection is scoped to one installed extension profile.                         |
+| Navigation destroys evidence                 | The runtime message wakes/holds the service worker until strict storage succeeds. The website is not blocked. Real Chromium proves navigation, immediate refresh, panel reopen, worker/browser restart recovery. | If serialization or storage fails before persistence, the site may still navigate; SubmittedIt truthfully claims no receipt for that attempt. |
+| Tab/origin race                              | Permission results match original tab ID/origin; capture sender URL, declared origin, page URL, and action origin are normalized and cross-checked.                                                              | A fully compromised renderer/browser is outside this protection.                                                                              |
+| Permission removed outside the panel         | Permission events dispose listeners, update runtime registration, reconcile stored metadata, and reinject only remaining enabled origins. Every capture independently rechecks permission.                       | A stale listener may briefly attempt a message during browser event propagation, but the worker rejects it after permission loss.             |
+| Local storage disclosure                     | Protected secrets/files are excluded, record count is bounded, access is trusted-context-only where supported, and delete-all exists.                                                                            | Ordinary captured values are unencrypted in Goal 08; profile/device compromise can read them. Use only synthetic demo data.                   |
+| Local storage tampering                      | Schema-v2 validation strictly parses every receipt, recomputes event hash/linkage, rejects future signatures/authority/chain fields, and resets malformed state rather than displaying it.                       | Reset cannot recover a damaged original receipt; local availability depends on the browser profile.                                           |
+| Fake future receipt state                    | Runtime can reach Prepared, Capturing, Attempted, and error only. Stored future event/signature/anchor slots must be null; panel copy contains no authority or onchain success.                                  | Later goals must add real cryptographic and runtime evidence before exposing those states.                                                    |
+| External telemetry or page upload            | Capture runtime contains no fetch, XHR, WebSocket, beacon, analytics, authority, relay, RPC, or Monad request. Persistent Chromium fails on non-fixture HTTP(S) traffic.                                         | Browser/OS background traffic and the website's own submission request are outside the extension request boundary.                            |
 
 ## Fictional demo portal threats and controls
 
@@ -110,10 +124,14 @@ receipt-bound public signature data. It does not contain the raw status token, r
 user-agent, IP address, browser fingerprint, authority private key, extension key, database dump, or
 real tax document.
 
-The Goal 07 extension's local record contains only preferences, exact enabled/revoked origins and
-timestamps, onboarding/migration metadata, and an empty receipt array. It contains no form values,
-page text, submission events, keys, signatures, ciphertext, portal token, or Monad data. Chrome
-profile storage is a distinct local boundary and is not claimed to be encrypted.
+The Goal 08 extension's local record contains preferences, exact enabled/revoked origins and
+timestamps, onboarding/migration metadata, and canonical Attempted events. An Attempted event may
+contain ordinary submitted synthetic values, normalized local page/action paths, form metadata,
+capture time, and exclusion descriptors. It contains no password/token/autofill-secret values,
+file bytes/metadata, page text, confirmation evidence, cookies, request headers, keys, signatures,
+ciphertext, portal status token, authority outcome, relay data, transaction hash, block number, or
+Monad request. Chrome profile storage is a distinct local boundary and is not claimed to be
+encrypted.
 
 Hashes are not automatically private. A hash of predictable content can be guessed by dictionary
 attack, and public linkage can reveal patterns. Event hashes must remain domain-separated
@@ -149,6 +167,11 @@ Goal 07 adds 66 extension unit checks, a production manifest/bundle audit, and a
 Chromium test covering runtime permissions, form/no-form results, unchanged synthetic values,
 revocation, blocked post-revocation probing, settings/revocation persistence across browser restart,
 empty receipt state, delete-all isolation, no external extension request, and clean startup.
-Native browser-chrome prompt appearance remains a focused manual review because headless page
-automation cannot accept browser toolbar prompts. A future production deployment would warrant
-independent review beyond hackathon testing.
+Goal 08 adds 72 extension unit checks plus a production-bundle audit and real persistent-Chromium
+capture scenario covering native multipart navigation; supported controls; repeated, empty, and
+leading-zero strings; password/token/autofill/file exclusion; canonical event recomputation;
+refresh/panel/browser restart persistence; submit/formdata/double-click/message deduplication;
+distinct later submission; revocation; delete-all; and no non-fixture HTTP(S) request. Native
+browser-chrome prompt appearance remains a focused manual review because headless page automation
+cannot accept browser toolbar prompts. A future production deployment would warrant independent
+review beyond hackathon testing.

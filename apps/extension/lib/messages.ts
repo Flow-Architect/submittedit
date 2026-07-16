@@ -1,8 +1,16 @@
+import {
+  MAX_CAPTURE_MESSAGE_BYTES,
+  parseCaptureAttemptRequest,
+  parseCapturePageErrorRequest,
+  type CaptureAttemptRequest,
+  type CapturePageErrorRequest,
+} from "./capture";
 import { inspectNormalizedOrigin } from "./origin";
 import {
   REMINDER_INTERVALS,
   RETENTION_PREFERENCES,
   type ExtensionSettings,
+  type LocalReceiptSummary,
   type ReminderInterval,
   type RetentionPreference,
 } from "./storage-schema";
@@ -39,29 +47,39 @@ export interface PageProbeResult {
   reachable: true;
   formCount: number;
   hasForm: boolean;
+  unusuallySensitiveFieldCount: number;
 }
 
 export interface PanelSnapshot {
   welcomeRequired: boolean;
   site: SiteContext;
   settings: ExtensionSettings;
-  receiptIndexCount: 0;
+  receiptIndexCount: number;
+  recentReceipts: LocalReceiptSummary[];
 }
 
-export type ExtensionErrorCode =
-  | "BAD_MESSAGE"
-  | "INTERNAL_ERROR"
-  | "MESSAGE_TIMEOUT"
-  | "NO_ACTIVE_TAB"
-  | "PERMISSION_DENIED"
-  | "PERMISSION_MISSING"
-  | "PERMISSION_REMOVE_FAILED"
-  | "PROBE_FAILED"
-  | "SIDE_PANEL_UNAVAILABLE"
-  | "STORAGE_READ_FAILED"
-  | "STORAGE_WRITE_FAILED"
-  | "TAB_NAVIGATED"
-  | "UNSUPPORTED_PAGE";
+export const EXTENSION_ERROR_CODES = [
+  "BAD_MESSAGE",
+  "CAPTURE_INSTALL_FAILED",
+  "CAPTURE_PERSIST_FAILED",
+  "CAPTURE_REJECTED",
+  "CAPTURE_TOO_LARGE",
+  "FORM_SERIALIZATION_FAILED",
+  "INTERNAL_ERROR",
+  "MESSAGE_TIMEOUT",
+  "NO_ACTIVE_TAB",
+  "PERMISSION_DENIED",
+  "PERMISSION_MISSING",
+  "PERMISSION_REMOVE_FAILED",
+  "PROBE_FAILED",
+  "SIDE_PANEL_UNAVAILABLE",
+  "STORAGE_READ_FAILED",
+  "STORAGE_WRITE_FAILED",
+  "TAB_NAVIGATED",
+  "UNSUPPORTED_PAGE",
+] as const;
+
+export type ExtensionErrorCode = (typeof EXTENSION_ERROR_CODES)[number];
 
 export interface ExtensionError {
   code: ExtensionErrorCode;
@@ -74,6 +92,10 @@ export type BackgroundResponse =
       ok: true;
       snapshot: PanelSnapshot;
       probe?: PageProbeResult;
+      capture?: {
+        deduplicated: boolean;
+        receipt: LocalReceiptSummary;
+      };
     }
   | {
       ok: false;
@@ -98,15 +120,52 @@ export type RuntimeRequest =
       demoMode: boolean;
     }
   | { type: "CLEAR_REVOKED_SITES" }
-  | { type: "DELETE_LOCAL_DATA" };
+  | { type: "DELETE_LOCAL_DATA" }
+  | CaptureAttemptRequest
+  | CapturePageErrorRequest;
+
+export type CaptureActivityEvent =
+  | {
+      type: "CAPTURE_ACTIVITY";
+      phase: "CAPTURING";
+      origin: string;
+      receiptId: string;
+      capturedAt: string;
+    }
+  | {
+      type: "CAPTURE_ACTIVITY";
+      phase: "CAPTURED";
+      receipt: LocalReceiptSummary;
+      deduplicated: boolean;
+    }
+  | {
+      type: "CAPTURE_ACTIVITY";
+      phase: "ERROR";
+      origin: string;
+      code: ExtensionErrorCode;
+      message: string;
+      capturedAt: string;
+    };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function hasOnlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
   const allowed = new Set(keys);
   return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== "string") {
+    return false;
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
+function isHash(value: unknown): value is `0x${string}` {
+  return typeof value === "string" && /^0x[0-9a-f]{64}$/u.test(value);
 }
 
 export function runtimeMessageByteLength(value: unknown): number | null {
@@ -120,12 +179,17 @@ export function runtimeMessageByteLength(value: unknown): number | null {
 
 export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
   const byteLength = runtimeMessageByteLength(value);
-  if (
-    !isRecord(value) ||
-    byteLength === null ||
-    byteLength > MAX_RUNTIME_MESSAGE_BYTES ||
-    typeof value.type !== "string"
-  ) {
+  if (!isRecord(value) || byteLength === null || typeof value.type !== "string") {
+    return null;
+  }
+
+  if (value.type === "CAPTURE_ATTEMPT") {
+    return byteLength <= MAX_CAPTURE_MESSAGE_BYTES ? parseCaptureAttemptRequest(value) : null;
+  }
+  if (value.type === "CAPTURE_PAGE_ERROR") {
+    return byteLength <= MAX_RUNTIME_MESSAGE_BYTES ? parseCapturePageErrorRequest(value) : null;
+  }
+  if (byteLength > MAX_RUNTIME_MESSAGE_BYTES) {
     return null;
   }
 
@@ -178,6 +242,86 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
     default:
       return null;
   }
+}
+
+export function parseCaptureActivityEvent(value: unknown): CaptureActivityEvent | null {
+  if (!isRecord(value) || value.type !== "CAPTURE_ACTIVITY" || typeof value.phase !== "string") {
+    return null;
+  }
+  if (value.phase === "CAPTURING") {
+    const origin = inspectNormalizedOrigin(value.origin);
+    if (
+      !hasOnlyKeys(value, ["type", "phase", "origin", "receiptId", "capturedAt"]) ||
+      !origin.ok ||
+      !isHash(value.receiptId) ||
+      !isIsoTimestamp(value.capturedAt)
+    ) {
+      return null;
+    }
+    return {
+      type: "CAPTURE_ACTIVITY",
+      phase: "CAPTURING",
+      origin: origin.origin,
+      receiptId: value.receiptId,
+      capturedAt: value.capturedAt,
+    };
+  }
+  if (value.phase === "CAPTURED") {
+    if (
+      !hasOnlyKeys(value, ["type", "phase", "receipt", "deduplicated"]) ||
+      typeof value.deduplicated !== "boolean" ||
+      !isRecord(value.receipt) ||
+      !hasOnlyKeys(value.receipt, ["receiptId", "eventHash", "capturedAt", "origin", "status"])
+    ) {
+      return null;
+    }
+    const origin = inspectNormalizedOrigin(value.receipt.origin);
+    if (
+      !origin.ok ||
+      !isHash(value.receipt.receiptId) ||
+      !isHash(value.receipt.eventHash) ||
+      !isIsoTimestamp(value.receipt.capturedAt) ||
+      value.receipt.status !== "ATTEMPTED"
+    ) {
+      return null;
+    }
+    return {
+      type: "CAPTURE_ACTIVITY",
+      phase: "CAPTURED",
+      receipt: {
+        receiptId: value.receipt.receiptId,
+        eventHash: value.receipt.eventHash,
+        capturedAt: value.receipt.capturedAt,
+        origin: origin.origin,
+        status: "ATTEMPTED",
+      },
+      deduplicated: value.deduplicated,
+    };
+  }
+  if (value.phase === "ERROR") {
+    const origin = inspectNormalizedOrigin(value.origin);
+    if (
+      !hasOnlyKeys(value, ["type", "phase", "origin", "code", "message", "capturedAt"]) ||
+      !origin.ok ||
+      typeof value.code !== "string" ||
+      !EXTENSION_ERROR_CODES.includes(value.code as ExtensionErrorCode) ||
+      typeof value.message !== "string" ||
+      value.message.length === 0 ||
+      value.message.length > 512 ||
+      !isIsoTimestamp(value.capturedAt)
+    ) {
+      return null;
+    }
+    return {
+      type: "CAPTURE_ACTIVITY",
+      phase: "ERROR",
+      origin: origin.origin,
+      code: value.code as ExtensionErrorCode,
+      message: value.message,
+      capturedAt: value.capturedAt,
+    };
+  }
+  return null;
 }
 
 export function settingsWithoutRevocations(

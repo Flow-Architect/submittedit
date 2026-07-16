@@ -8,16 +8,18 @@ verifies its source/runtime match, records deterministic public metadata, and ad
 RPC/read boundary. Goal 06 adds the hosted-compatible fictional filing portal, durable PostgreSQL
 outcomes, and a server-only authority signer for receipt-bound terminal event cores. The extension
 becomes a privacy-first Manifest V3 shell in Goal 07: a real action/side panel, exact-origin
-optional permission flow, fixed form-presence probe, versioned local settings, empty receipt index,
-and permission revocation. No browser submission capture, extension signing, receipt encryption,
-relay, public verifier, or application-level live-chain workflow has been implemented.
+optional permission flow, versioned local settings, and permission revocation. Goal 08 adds a
+runtime-only, exact-origin standard-form listener; native FormData serialization; canonical
+Attempted events; durable local receipt records; narrow deduplication; and truthful Prepared,
+Capturing, Attempted, and failure states. No Site confirmed capture, extension signing, receipt
+encryption, relay, public verifier, or application-level live-chain workflow has been implemented.
 
 ## Workspace boundaries
 
 | Path                       | Responsibility                                                                          | May depend on                               |
 | -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------- |
 | `apps/web`                 | Fictional filing portal and authority APIs; future verifier and relay                   | shared packages                             |
-| `apps/extension`           | Manifest V3 side-panel shell; future browser-side lifecycle capture                     | browser-safe shared packages                |
+| `apps/extension`           | Manifest V3 side panel, exact-origin standard-form capture, and local Attempted records | browser-safe shared packages                |
 | `packages/receipt-core`    | Canonical receipt schemas, event hashing, lifecycle and capture rules                   | `@noble/hashes`; browser-safe APIs only     |
 | `packages/contract-client` | Generated registry ABI/deployment metadata, stage mapping, and strict anchor projection | `viem`; reviewed public deployment manifest |
 | `packages/ui`              | Shared brand metadata, semantic CSS tokens, and source vector assets                    | No application or receipt-domain dependency |
@@ -30,12 +32,14 @@ Applications may consume shared packages. Shared packages must not import applic
 ### Local browser
 
 The current extension owns one validated `chrome.storage.local` record containing settings,
-minimal exact-origin metadata, revoked-origin history, migration metadata, and an empty receipt
-index. Chrome's permission store—not that metadata—is authoritative for site access. The fixed
-page probe can return only origin, reachability, and standard-form count after permission. Future
-work will add decrypted receipt contents, local identity keys, per-receipt encryption keys, and
-retention enforcement. Goal 03 defines only receipt/public-key boundaries; Goal 07 generates no
-keys, signatures, receipts, ciphertext, or Monad transactions.
+minimal exact-origin metadata, revoked-origin history, migration metadata, and up to 50 local
+Attempted records. Chrome's permission store—not enabled-origin metadata—is authoritative for site
+access. After permission, the runtime capture script can report form readiness and serialize only
+native FormData successful controls on a real submit event. Protected values are removed before
+the internal message; the service worker then applies the shared capture policy, creates the exact
+Goal 03 event envelope/hash, and stores it. Future work will add Site confirmed evidence, local
+identity keys, signatures, encrypted receipt bundles, and retention enforcement. Goal 08 generates
+no keys, signatures, ciphertext, portal request, relay request, or Monad transaction.
 
 ### Hosted services
 
@@ -60,13 +64,17 @@ The contract is permissionless: any address may submit a structurally valid anch
 - WXT produces an MV3 module service worker and side-panel entry point. An explicit toolbar-action
   handler opens the panel inside the user gesture so Chrome can provide the narrow `activeTab`
   grant; the production manifest has no mandatory host permissions and declares only optional
-  HTTP/HTTPS host capacity. `scripting` is limited to the fixed form-count function after an
-  exact-origin permission check.
+  HTTP/HTTPS host capacity. `scripting` dynamically registers the reviewed capture bundle for the
+  exact set of origins with live permission; the manifest's `content_scripts` array remains empty.
+  The already-open granted tab receives the bundle immediately, future navigations receive it at
+  `document_start`, and revocation unregisters/disposes it.
 - The Goal 06 data layer uses parameterized `postgres` tagged templates against PostgreSQL 17.
   Migration `0001_demo_filing` is applied transactionally and recorded in `schema_migrations`.
 - Vitest covers deterministic unit, cryptographic, migration, and PostgreSQL integration checks.
   Playwright verifies the real portal/API lifecycle over HTTP and reproduces receipt vectors from
-  the built ESM package in real Chromium.
+  the built ESM package in real Chromium. The extension Playwright path loads the production
+  unpacked bundle in a persistent Chromium profile and exercises real FormData capture, navigation,
+  restart, deduplication, resubmission, revocation, and local event recomputation.
 - CI provisions a dedicated non-secret PostgreSQL service, applies migrations, repeats the root
   quality gate and browser scenarios, installs Playwright Chromium for the unpacked-extension
   persistent-context test, and runs Monad Foundry formatting/build/test commands in a separate job.
@@ -105,23 +113,37 @@ exact retries return the same envelope and conflicting cores are rejected. See
 
 ## Extension shell boundary
 
-The side panel and service worker communicate through a closed, size-limited message union. Unknown
-types, extra fields, malformed origins, and untrusted senders fail closed. All durable writes go
-through schema-versioned storage helpers; version 0 settings migrate, malformed state resets to an
-empty safe record, and delete-all touches only the SubmittedIt key after removing granted HTTP/HTTPS
-origins.
+The side panel, service worker, and isolated capture script communicate through closed,
+size-limited message unions. Ordinary panel messages remain limited to 8 KiB. Capture messages may
+reach 128 KiB but have strict keys, bounded fields/values, canonical URLs/origins, recomputed local
+fingerprints, and value-free protected candidates. Unknown types, extra fields, malformed origins,
+oversized requests, untrusted senders, permission loss, and page-origin mismatch fail closed.
 
-The service worker persists no operational truth in module globals and performs no polling. On
+The page script listens to `submit` and `formdata` in the capture phase. It uses
+`FormData(form, submitter)`, maps only supported successful controls, strips passwords/tokens/files
+before messaging, and never calls `preventDefault`. A local fingerprint plus a 1.5-second
+same-form window reuses one random attempt identity for duplicate browser events. The service
+worker serializes receipt writes and deduplicates the persisted attempt ID so message retries do not
+create a second record.
+
+The schema-v2 local wrapper is operational storage around the exact Goal 03 event envelope, not a
+second protocol format. It stores independent random receipt/attempt/nonce values, capture and
+origin metadata, the canonical event, and explicit null future slots. It cannot contain a
+signature, authority event, Site confirmed event, or chain anchor in Goal 08. Every load strictly
+parses and recomputes the one-event chain. Version 1 migrates with an empty receipt array; malformed
+or tampered state resets to safe defaults. Delete-all touches only the SubmittedIt key after
+removing granted HTTP/HTTPS origins and runtime registration.
+
+The service worker performs no polling and keeps no receipt truth solely in module globals. On
 startup, install, browser restart, permission changes, or panel bootstrap it reloads storage and
-reconciles the active exact origin with `chrome.permissions`. Revocation removes permission before
-future script execution. Navigation races are detected by comparing the active tab and the origin
-returned from the isolated script.
+reconciles exact origins with `chrome.permissions`. The transient in-worker promise queue only
+serializes overlapping capture writes; persisted attempt IDs remain the dedupe source of truth
+across suspension/restart.
 
 The panel's reachable states are Welcome, Site not enabled, Permission request in progress,
-Permission denied, Checking, No form, Form detected, Unavailable, and Error. Later Capturing,
-Receipt pending, Chain anchoring, and Verified labels exist only as typed test-fixture vocabulary;
-no runtime action reaches them. See [the extension guide](EXTENSION.md) and
-[privacy boundary](PRIVACY.md).
+Permission denied, Checking, No form, Prepared, Capturing, Attempted, Capture failed, Unavailable,
+and Error. Receipt pending, Chain anchoring, and Verified remain future test vocabulary only. See
+[the extension guide](EXTENSION.md) and [privacy boundary](PRIVACY.md).
 
 ## Monad safety boundary
 
@@ -135,13 +157,13 @@ The Goal 03 event core remains the evidence source of truth. `receipt-core` reco
 
 `contract-client` exports the verified chain/address/read configuration and deployment metadata generated from the manifest. It strictly accepts exactly those projection fields, validates their Monad Testnet and bytes32 encoding, preserves schema/chain/address metadata in the returned request, maps event stages to the fixed Solidity enum, and adds the established extension-key and applicable authority-key fingerprints. Prepared and Verification failed cannot become contract events. Key fingerprints are not signatures, and Goal 05 does not invent a production public-key derivation rule that Goal 03 did not define.
 
-The current extension shell does not create events. A future extension milestone will create the
-Attempted/Site confirmed receipt chain and may request the Goal 06 fictional authority's signature
-only after constructing a matching terminal event core. A future
-relay will verify signed evidence before submitting its anchor request and will track confirmation
-without changing the event core. A future verifier will independently recompute the event and
-signature checks, compare the expected linkage and stage with confirmed contract state/logs, and
-account for chain confirmation. Goal 06 performs no Monad transaction. The contract alone cannot
-make Accepted or Rejected truthful; those displayed receipt outcomes additionally require a
-verified authority signature. See [the contract reference](CONTRACT.md) and
-[threat model](THREAT_MODEL.md).
+The current extension creates the first canonical Attempted event locally but does not sign,
+encrypt, relay, or anchor it. Goal 09 will add optional Site confirmed evidence without calling it
+acceptance. Later extension work may request the Goal 06 fictional authority's signature only
+after constructing a matching terminal event core. A future relay will verify signed evidence
+before submitting its anchor request and will track confirmation without changing the event core.
+A future verifier will independently recompute event/signature checks, compare expected linkage
+and stage with confirmed contract state/logs, and account for chain confirmation. Goal 08 performs
+no Monad transaction. The contract alone cannot make Accepted or Rejected truthful; those displayed
+receipt outcomes additionally require a verified authority signature. See
+[the contract reference](CONTRACT.md) and [threat model](THREAT_MODEL.md).

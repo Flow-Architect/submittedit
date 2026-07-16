@@ -113,7 +113,8 @@ State resolution follows a strict precedence: Verification failed overrides the 
 ## Demo filing portal
 
 - Must identify the portal as fictional and synthetic.
-- Must allow repeated live submissions to create distinct receipts and real runtime outcomes in later goals.
+- With the extension enabled, repeated intentional live submissions create distinct local
+  Attempted receipts while the portal creates distinct runtime submission records and outcomes.
 - Never use IRS visual language or imply government affiliation.
 
 ## Async and recovery states

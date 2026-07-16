@@ -38,6 +38,9 @@ importers:
 
   apps/extension:
     dependencies:
+      '@submittedit/receipt-core':
+        specifier: workspace:*
+        version: link:../../packages/receipt-core
       '@submittedit/ui':
         specifier: workspace:*
         version: link:../../packages/ui

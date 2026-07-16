@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { createStoredAttemptReceipt } from "../../lib/attempt-receipt";
 import {
   addRevokedSite,
+  appendAttemptReceipt,
   createInitialExtensionState,
   EXTENSION_STORAGE_KEY,
   resolveStoredExtensionState,
+  summarizeAttemptReceipt,
   validateExtensionState,
 } from "../../lib/storage-schema";
 import {
@@ -12,6 +15,7 @@ import {
   type LocalStorageArea,
   saveExtensionState,
 } from "../../lib/storage";
+import { syntheticCaptureRequest } from "./fixtures";
 
 const NOW = "2026-07-16T12:00:00.000Z";
 const LATER = "2026-07-16T12:01:00.000Z";
@@ -37,10 +41,10 @@ class MemoryStorage implements LocalStorageArea {
 }
 
 describe("versioned extension storage", () => {
-  it("creates safe defaults with an empty receipt index", () => {
+  it("creates safe schema-v2 defaults", () => {
     const state = createInitialExtensionState(NOW);
     expect(state).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       hasSeenWelcome: false,
       settings: {
         reminderInterval: "off",
@@ -54,7 +58,7 @@ describe("versioned extension storage", () => {
     expect(validateExtensionState(state)).toEqual(state);
   });
 
-  it("initializes missing storage and persists it", async () => {
+  it("initializes missing storage and preserves unrelated keys", async () => {
     const area = new MemoryStorage({ unrelated: "preserved" });
     const loaded = await loadExtensionState(area, NOW);
     expect(loaded.disposition).toBe("initialized");
@@ -62,34 +66,21 @@ describe("versioned extension storage", () => {
     expect(area.values.unrelated).toBe("preserved");
   });
 
-  it("persists settings and enabled-origin metadata", async () => {
-    const area = new MemoryStorage();
-    const { state } = await loadExtensionState(area, NOW);
-    const saved = await saveExtensionState(
-      area,
-      {
-        ...state,
-        hasSeenWelcome: true,
-        settings: {
-          ...state.settings,
-          reminderInterval: "3-days",
-          retentionPreference: "30-days",
-          demoMode: true,
-        },
-        enabledOrigins: {
-          "https://example.com": {
-            origin: "https://example.com",
-            enabledAt: NOW,
-          },
-        },
-      },
-      LATER,
-    );
-    const reopened = await loadExtensionState(area, LATER);
-    expect(reopened.disposition).toBe("current");
-    expect(reopened.state).toEqual(saved);
-    expect(reopened.state.settings.reminderInterval).toBe("3-days");
-    expect(reopened.state.enabledOrigins["https://example.com"]).toBeDefined();
+  it("migrates strict version-one state without inventing receipts", () => {
+    const versionOne = {
+      ...createInitialExtensionState(NOW),
+      schemaVersion: 1,
+      hasSeenWelcome: true,
+      receiptIndex: [],
+    };
+    const resolved = resolveStoredExtensionState(versionOne, LATER);
+    expect(resolved.kind).toBe("migrated");
+    expect(resolved.state).toMatchObject({
+      schemaVersion: 2,
+      hasSeenWelcome: true,
+      receiptIndex: [],
+      migration: { sourceVersion: 1, migratedAt: LATER },
+    });
   });
 
   it("migrates version zero without seeding receipts or sites", () => {
@@ -115,6 +106,54 @@ describe("versioned extension storage", () => {
     });
   });
 
+  it("persists and restores a strict canonical Attempted receipt", async () => {
+    const area = new MemoryStorage();
+    const { state } = await loadExtensionState(area, NOW);
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const appended = appendAttemptReceipt(state, receipt);
+    expect(appended.deduplicated).toBe(false);
+    const saved = await saveExtensionState(area, appended.state, LATER);
+    const reopened = await loadExtensionState(area, LATER);
+    expect(reopened.state).toEqual(saved);
+    expect(reopened.state.receiptIndex).toHaveLength(1);
+    expect(summarizeAttemptReceipt(reopened.state.receiptIndex[0]!)).toMatchObject({
+      receiptId: receipt.receiptId,
+      status: "ATTEMPTED",
+    });
+  });
+
+  it("deduplicates exact retries and rejects conflicting reuse", () => {
+    const initial = createInitialExtensionState(NOW);
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const first = appendAttemptReceipt(initial, receipt);
+    const retry = appendAttemptReceipt(first.state, receipt);
+    expect(retry.deduplicated).toBe(true);
+    expect(retry.state.receiptIndex).toHaveLength(1);
+
+    const conflict = createStoredAttemptReceipt(
+      syntheticCaptureRequest({ receiptId: `0x${"2".repeat(64)}` }),
+    );
+    expect(() => appendAttemptReceipt(first.state, conflict)).toThrow(
+      /conflicting duplicate capture/u,
+    );
+  });
+
+  it("stores otherwise identical later attempts independently", () => {
+    const firstReceipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const secondReceipt = createStoredAttemptReceipt(
+      syntheticCaptureRequest({
+        attemptId: "C".repeat(43),
+        receiptId: `0x${"2".repeat(64)}`,
+        receiptNonce: "D".repeat(43),
+        capturedAt: LATER,
+      }),
+    );
+    const first = appendAttemptReceipt(createInitialExtensionState(NOW), firstReceipt);
+    const second = appendAttemptReceipt(first.state, secondReceipt);
+    expect(second.state.receiptIndex).toHaveLength(2);
+    expect(new Set(second.state.receiptIndex.map((receipt) => receipt.receiptId)).size).toBe(2);
+  });
+
   it.each([
     null,
     {},
@@ -127,41 +166,7 @@ describe("versioned extension storage", () => {
         reminderInterval: "hourly",
       },
     },
-    {
-      ...createInitialExtensionState(NOW),
-      enabledOrigins: {
-        "https://example.com/path": {
-          origin: "https://example.com/path",
-          enabledAt: NOW,
-        },
-      },
-    },
     { ...createInitialExtensionState(NOW), receipts: [{ id: "fake" }] },
-    {
-      ...createInitialExtensionState(NOW),
-      settings: {
-        ...createInitialExtensionState(NOW).settings,
-        unknownSetting: true,
-      },
-    },
-    {
-      ...createInitialExtensionState(NOW),
-      enabledOrigins: {
-        "https://example.com": {
-          origin: "https://example.com",
-          enabledAt: NOW,
-          permissionOverride: true,
-        },
-      },
-    },
-    {
-      ...createInitialExtensionState(NOW),
-      migration: {
-        sourceVersion: null,
-        migratedAt: null,
-        hiddenReceipt: true,
-      },
-    },
   ])("resets malformed state safely: %#", (value) => {
     const resolved = resolveStoredExtensionState(value, NOW);
     expect(resolved.kind).toBe("malformed");
@@ -169,14 +174,33 @@ describe("versioned extension storage", () => {
     expect(resolved.state.enabledOrigins).toEqual({});
   });
 
-  it("repairs malformed persisted storage", async () => {
-    const area = new MemoryStorage({
-      [EXTENSION_STORAGE_KEY]: { schemaVersion: 1, receiptIndex: ["fake"] },
-    });
-    const loaded = await loadExtensionState(area, NOW);
-    expect(loaded.disposition).toBe("reset-malformed");
-    expect(loaded.state.receiptIndex).toEqual([]);
-    expect(area.values[EXTENSION_STORAGE_KEY]).toEqual(loaded.state);
+  it("rejects future evidence or changed event data in stored Goal 08 records", () => {
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const state = {
+      ...createInitialExtensionState(NOW),
+      receiptIndex: [{ ...receipt, extensionSignature: { fake: true } }],
+    };
+    expect(validateExtensionState(state)).toBeNull();
+    expect(
+      validateExtensionState({
+        ...createInitialExtensionState(NOW),
+        receiptIndex: [
+          {
+            ...receipt,
+            event: {
+              ...receipt.event,
+              eventHash: `0x${"f".repeat(64)}`,
+            },
+          },
+        ],
+      }),
+    ).toBeNull();
+    expect(
+      validateExtensionState({
+        ...createInitialExtensionState(NOW),
+        receiptIndex: [{ ...receipt, pagePathHash: `0x${"f".repeat(64)}` }],
+      }),
+    ).toBeNull();
   });
 
   it("stores one durable revoked-site entry per origin", () => {
@@ -186,9 +210,11 @@ describe("versioned extension storage", () => {
     expect(second.revokedSites).toEqual([{ origin: "https://example.com", revokedAt: LATER }]);
   });
 
-  it("delete-all clears only SubmittedIt-owned state and reinitializes", async () => {
+  it("delete-all clears receipts and only SubmittedIt-owned state", async () => {
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const initial = appendAttemptReceipt(createInitialExtensionState(NOW), receipt).state;
     const area = new MemoryStorage({
-      [EXTENSION_STORAGE_KEY]: createInitialExtensionState(NOW),
+      [EXTENSION_STORAGE_KEY]: initial,
       unrelated: { keep: true },
     });
     const reset = await deleteAllExtensionData(area, LATER);

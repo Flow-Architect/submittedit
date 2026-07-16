@@ -107,8 +107,8 @@ if (
 ) {
   fail("optional_host_permissions must contain only the HTTP and HTTPS capacity patterns");
 }
-if (manifest.content_scripts) {
-  fail("Goal 07 must not register persistent content scripts");
+if ((manifest.content_scripts ?? []).length !== 0) {
+  fail("capture scripts must not be registered at install time");
 }
 if (manifest.externally_connectable) {
   fail("external messaging must not be enabled");
@@ -120,7 +120,11 @@ if (!manifest.background?.service_worker) {
   fail("background service worker is missing");
 }
 
-const requiredOutputFiles = [manifest.side_panel.default_path, manifest.background.service_worker];
+const requiredOutputFiles = [
+  manifest.side_panel.default_path,
+  manifest.background.service_worker,
+  "content-scripts/capture.js",
+];
 for (const file of requiredOutputFiles) {
   if (!(await exists(join(outputDirectory, file)))) {
     fail(`manifest output ${file} does not exist`);
@@ -175,21 +179,58 @@ const workerSource = await readFile(
   join(outputDirectory, manifest.background.service_worker),
   "utf8",
 );
-if (!workerSource.includes(".forms.length")) {
-  fail("service worker does not contain the reviewed form-count probe");
+for (const requiredCaptureBoundary of [
+  "registerContentScripts",
+  "getRegisteredContentScripts",
+  "permissions.contains",
+  "ATTEMPTED",
+]) {
+  if (!workerSource.includes(requiredCaptureBoundary)) {
+    fail(`service worker is missing capture boundary ${requiredCaptureBoundary}`);
+  }
 }
-for (const forbiddenProbeCapability of [
-  "FormData(",
-  ".elements",
+
+const captureSource = await readFile(join(outputDirectory, "content-scripts/capture.js"), "utf8");
+const javascriptSource = (
+  await Promise.all(
+    files.filter((file) => file.endsWith(".js")).map((file) => readFile(file, "utf8")),
+  )
+).join("\n");
+for (const requiredRuntimeBoundary of [
+  "content-scripts/capture.js",
+  "SENSITIVE_HIDDEN_TOKEN",
+  "FILE_METADATA_NOT_OPTED_IN",
+]) {
+  if (!javascriptSource.includes(requiredRuntimeBoundary)) {
+    fail(`compiled runtime is missing reviewed boundary ${requiredRuntimeBoundary}`);
+  }
+}
+for (const requiredCaptureCapability of [
+  "FormData",
+  "formdata",
+  "submit",
+  "PASSWORD",
+  "one-time-code",
+  "CAPTURE_ATTEMPT",
+]) {
+  if (!captureSource.includes(requiredCaptureCapability)) {
+    fail(`capture bundle is missing reviewed capability ${requiredCaptureCapability}`);
+  }
+}
+for (const forbiddenCaptureCapability of [
+  "fetch(",
+  "XMLHttpRequest",
+  "WebSocket",
+  "sendBeacon",
+  "document.cookie",
   ".innerText",
   ".outerHTML",
   ".textContent",
-  "document.cookie",
-  "querySelector(",
-  'addEventListener("submit"',
+  "BEGIN PRIVATE KEY",
+  "testnet.monad",
 ]) {
-  if (workerSource.includes(forbiddenProbeCapability)) {
-    fail(`service worker contains out-of-scope page access: ${forbiddenProbeCapability}`);
+  if (captureSource.includes(forbiddenCaptureCapability)) {
+    fail(`capture bundle contains out-of-scope capability: ${forbiddenCaptureCapability}`);
   }
 }
 

@@ -1,6 +1,9 @@
 # SubmittedIt receipt protocol 1.0
 
-This document is the public type and behavior contract for `@submittedit/receipt-core`. It defines deterministic evidence structures only. Browser capture, encryption, key generation, real signing and signature verification, contract writes, relay APIs, and product UI belong to later goals.
+This document is the public type and behavior contract for `@submittedit/receipt-core`. It defines
+deterministic evidence structures only. The Goal 08 extension now uses these structures to create
+local Attempted events; encryption, key generation, real extension signing/signature verification,
+contract writes, relay APIs, and final product verification remain separate boundaries.
 
 ## Protocol layers
 

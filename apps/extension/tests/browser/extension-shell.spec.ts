@@ -1,6 +1,11 @@
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
+  hashEventCore,
+  validateEventChain,
+  type AttemptedEventCore,
+} from "../../../../packages/receipt-core/dist/index.js";
+import {
   chromium,
   expect,
   test,
@@ -9,11 +14,26 @@ import {
   type Worker,
 } from "@playwright/test";
 import type { BackgroundResponse, RuntimeRequest } from "../../lib/messages";
-import { EXTENSION_STORAGE_KEY } from "../../lib/storage-schema";
+import { type LocalReceiptSummary, type StoredAttemptReceipt } from "../../lib/storage-schema";
 
 const fixtureOrigin = "http://127.0.0.1:4179";
 const fixturePattern = `${fixtureOrigin}/*`;
 const productionExtensionPath = resolve(".output/chrome-mv3");
+const extensionStorageKey = "submittedit.localState";
+
+interface BrowserExtensionState {
+  schemaVersion: 2;
+  hasSeenWelcome: boolean;
+  settings: {
+    reminderInterval: string;
+    retentionPreference: string;
+    demoMode: boolean;
+    revokedSites: { origin: string; revokedAt: string }[];
+  };
+  enabledOrigins: Record<string, { origin: string; enabledAt: string }>;
+  receiptIndex: StoredAttemptReceipt[];
+  recentReceipts?: LocalReceiptSummary[];
+}
 
 interface ExtensionChrome {
   permissions: {
@@ -22,10 +42,22 @@ interface ExtensionChrome {
   };
   runtime: {
     getManifest(): {
+      content_scripts?: unknown[];
       host_permissions?: string[];
       optional_host_permissions?: string[];
     };
     sendMessage(message: RuntimeRequest, callback: (response: BackgroundResponse) => void): void;
+  };
+  scripting: {
+    getRegisteredContentScripts(filter?: { ids?: string[] }): Promise<
+      {
+        id: string;
+        js?: string[];
+        matches?: string[];
+        persistAcrossSessions?: boolean;
+        runAt?: string;
+      }[]
+    >;
   };
   storage: {
     local: {
@@ -79,6 +111,26 @@ async function containsFixturePermission(worker: Worker): Promise<boolean> {
   }, fixturePattern);
 }
 
+async function readExtensionState(worker: Worker): Promise<BrowserExtensionState> {
+  const stored = await worker.evaluate(async (key) => {
+    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+    return chromeApi.storage.local.get(key);
+  }, extensionStorageKey);
+  const state = stored[extensionStorageKey];
+  if (
+    typeof state !== "object" ||
+    state === null ||
+    Array.isArray(state) ||
+    !("schemaVersion" in state) ||
+    state.schemaVersion !== 2 ||
+    !("receiptIndex" in state) ||
+    !Array.isArray(state.receiptIndex)
+  ) {
+    throw new Error("Browser returned malformed SubmittedIt local state.");
+  }
+  return state as unknown as BrowserExtensionState;
+}
+
 async function preparePermissionBootstrapExtension(destination: string): Promise<string> {
   await cp(productionExtensionPath, destination, { recursive: true });
   const manifestPath = join(destination, "manifest.json");
@@ -100,12 +152,21 @@ async function restoreProductionManifest(
   });
 }
 
-test("unpacked MV3 shell persists settings, probes minimally, and revokes access", async ({}, testInfo) => {
+function attemptedCore(state: BrowserExtensionState, index: number): AttemptedEventCore {
+  const core = state.receiptIndex[index]?.event.core;
+  if (!core || core.stage !== "ATTEMPTED") {
+    throw new Error(`Receipt ${index} is not an Attempted event.`);
+  }
+  return core;
+}
+
+test("attempt capture persists across navigation, deduplicates retries, and remains local-only", async ({}, testInfo) => {
   const userDataDirectory = testInfo.outputPath("extension-profile");
   const browserExtensionPath = testInfo.outputPath("unpacked-extension");
   const productionManifest = await preparePermissionBootstrapExtension(browserExtensionPath);
   const observedHttpRequests: string[] = [];
   const runtimeErrors: string[] = [];
+  const panelConsoleErrors: string[] = [];
 
   let context = await launchExtensionContext(userDataDirectory, browserExtensionPath);
   let worker = await getServiceWorker(context);
@@ -113,8 +174,11 @@ test("unpacked MV3 shell persists settings, probes minimally, and revokes access
   if (!extensionId) {
     throw new Error("Chromium did not expose the unpacked extension ID.");
   }
-  expect(extensionId).toMatch(/^[a-p]{32}$/);
+  expect(extensionId).toMatch(/^[a-p]{32}$/u);
   expect(await containsFixturePermission(worker)).toBe(true);
+  await expect
+    .poll(async () => (await readExtensionState(worker)).enabledOrigins[fixtureOrigin]?.origin)
+    .toBe(fixtureOrigin);
   await context.close();
 
   await restoreProductionManifest(browserExtensionPath, productionManifest);
@@ -135,34 +199,49 @@ test("unpacked MV3 shell persists settings, probes minimally, and revokes access
     return chromeApi.runtime.getManifest();
   });
   expect(runtimeManifest.host_permissions ?? []).toEqual([]);
+  expect(runtimeManifest.content_scripts ?? []).toEqual([]);
   expect(runtimeManifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
   expect(await containsFixturePermission(worker)).toBe(true);
 
   await expect
-    .poll(async () => {
-      const stored = await worker.evaluate(async (key) => {
+    .poll(async () =>
+      worker.evaluate(async () => {
         const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-        return chromeApi.storage.local.get(key);
-      }, EXTENSION_STORAGE_KEY);
-      return EXTENSION_STORAGE_KEY in stored;
-    })
-    .toBe(true);
-  const initialStorage = await worker.evaluate(async (key) => {
-    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-    return chromeApi.storage.local.get(key);
-  }, EXTENSION_STORAGE_KEY);
-  expect(initialStorage[EXTENSION_STORAGE_KEY]).toMatchObject({
-    schemaVersion: 1,
+        return chromeApi.scripting.getRegisteredContentScripts({
+          ids: ["submittedit-attempt-capture"],
+        });
+      }),
+    )
+    .toEqual([
+      expect.objectContaining({
+        id: "submittedit-attempt-capture",
+        js: ["content-scripts/capture.js"],
+        matches: [fixturePattern],
+        persistAcrossSessions: true,
+        runAt: "document_start",
+      }),
+    ]);
+
+  const initialState = await readExtensionState(worker);
+  expect(initialState).toMatchObject({
+    schemaVersion: 2,
     receiptIndex: [],
-    enabledOrigins: {},
+    enabledOrigins: {
+      [fixtureOrigin]: {
+        origin: fixtureOrigin,
+      },
+    },
   });
 
   const formPage = await context.newPage();
   await formPage.goto(`${fixtureOrigin}/with-form`);
-  expect(await containsFixturePermission(worker)).toBe(true);
+  await formPage.setInputFiles('[name="attachment"]', {
+    name: "synthetic.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("forbidden-file-bytes"),
+  });
 
-  const panelPage = await context.newPage();
-  const panelConsoleErrors: string[] = [];
+  let panelPage = await context.newPage();
   panelPage.on("console", (message) => {
     if (message.type() === "error") {
       panelConsoleErrors.push(message.text());
@@ -170,96 +249,186 @@ test("unpacked MV3 shell persists settings, probes minimally, and revokes access
   });
   panelPage.on("pageerror", (error) => runtimeErrors.push(error.message));
   await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-
   await formPage.bringToFront();
 
   await expect(
     panelPage.getByRole("heading", { name: "Know what the browser can prove." }),
   ).toBeVisible();
   await panelPage.getByRole("button", { name: "Continue" }).click();
-  await expect(panelPage.getByText("Form detected", { exact: true })).toBeVisible();
-  await expect(panelPage.getByText("A standard form is present")).toBeVisible();
+  await expect(panelPage.getByText("Prepared", { exact: true })).toBeVisible();
+  await expect(panelPage.getByText("Ready locally. Not submitted.")).toBeVisible();
   await expect(panelPage.getByText(fixtureOrigin, { exact: true })).toBeVisible();
 
-  const fixtureValues = await formPage.evaluate(() => {
-    const displayName = document.querySelector<HTMLInputElement>('[name="displayName"]');
-    const contact = document.querySelector<HTMLInputElement>('[name="contact"]');
-    return {
-      displayName: displayName?.value,
-      contact: contact?.value,
-      submitted: (
-        globalThis as typeof globalThis & {
-          __fixtureState?: { submitted: boolean };
-        }
-      ).__fixtureState?.submitted,
-    };
+  await Promise.all([
+    formPage.waitForURL(`${fixtureOrigin}/submitted`),
+    formPage.getByRole("button", { name: "Submit synthetic fixture" }).click(),
+  ]);
+  await expect(panelPage.getByText("Attempted", { exact: true }).first()).toBeVisible();
+  await expect(panelPage.getByText("Submission attempt captured.")).toBeVisible();
+  await expect(panelPage.getByText("Acceptance not yet confirmed.")).toBeVisible();
+  await expect(panelPage.getByText("Accepted", { exact: true })).toHaveCount(0);
+
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(1);
+  let capturedState = await readExtensionState(worker);
+  const firstReceipt = capturedState.receiptIndex[0]!;
+  const firstCore = attemptedCore(capturedState, 0);
+  expect(firstReceipt.receiptNonce).toMatch(/^[A-Za-z0-9_-]{43}$/u);
+  expect(firstReceipt.event.eventHash).toBe(hashEventCore(firstCore));
+  expect(validateEventChain([firstReceipt.event])).toMatchObject({
+    currentStage: "ATTEMPTED",
+    latestEventHash: firstReceipt.event.eventHash,
+    receiptId: firstReceipt.receiptId,
   });
-  expect(fixtureValues).toEqual({
-    displayName: "Alex Example",
-    contact: "alex@example.invalid",
-    submitted: false,
+  expect(firstReceipt).toMatchObject({
+    currentStage: "ATTEMPTED",
+    derivedStatus: "PENDING_ACCEPTANCE",
+    siteConfirmationEvent: null,
+    authorityEvent: null,
+    extensionSignature: null,
+    chainAnchor: null,
   });
 
-  const probeResponse = await sendExtensionMessage(panelPage, {
-    type: "PROBE_CURRENT_SITE",
+  const fieldsByName = new Map(firstCore.capturedFields.map((field) => [field.name, field]));
+  expect(fieldsByName.get("displayName")).toMatchObject({ values: ["Alex Example"] });
+  expect(fieldsByName.get("numericValue")).toMatchObject({ values: ["12"] });
+  expect(fieldsByName.get("leadingZeroCode")).toMatchObject({ values: ["0012"] });
+  expect(fieldsByName.get("sampleDate")).toMatchObject({ values: ["2026-07-16"] });
+  expect(fieldsByName.get("notes")).toMatchObject({
+    values: ["First line\nSecond line"],
   });
-  expect(probeResponse).toMatchObject({
-    ok: true,
-    probe: {
-      origin: fixtureOrigin,
-      reachable: true,
-      formCount: 1,
-      hasForm: true,
-    },
+  expect(fieldsByName.get("singleChoice")).toMatchObject({ values: ["second"] });
+  expect(fieldsByName.get("multipleChoice")).toMatchObject({
+    values: ["alpha", "gamma"],
   });
-  if (probeResponse.ok) {
-    expect(Object.keys(probeResponse.probe ?? {}).sort()).toEqual([
-      "formCount",
-      "hasForm",
-      "origin",
-      "reachable",
-    ]);
+  expect(fieldsByName.get("checkedChoice")).toMatchObject({ values: ["checked"] });
+  expect(fieldsByName.get("radioChoice")).toMatchObject({ values: ["second"] });
+  expect(fieldsByName.get("repeatedName")).toMatchObject({
+    values: ["first repeated", "second repeated"],
+  });
+  expect(fieldsByName.get("explicitEmpty")).toMatchObject({ values: [""] });
+  expect(fieldsByName.has("uncheckedChoice")).toBe(false);
+  expect(fieldsByName.has("disabledValue")).toBe(false);
+
+  const serializedReceipt = JSON.stringify(firstReceipt);
+  for (const forbidden of [
+    "forbidden-password-value",
+    "forbidden-csrf-value",
+    "forbidden-auth-value",
+    "forbidden-session-value",
+    "forbidden-nonce-value",
+    "forbidden-otp-value",
+    "forbidden-file-bytes",
+  ]) {
+    expect(serializedReceipt).not.toContain(forbidden);
   }
+  expect(firstCore.excludedFields).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ name: "password", reason: "PASSWORD" }),
+      expect.objectContaining({ name: "csrf_token", reason: "SENSITIVE_HIDDEN_TOKEN" }),
+      expect.objectContaining({ name: "authenticationToken", reason: "SENSITIVE_HIDDEN_TOKEN" }),
+      expect.objectContaining({ name: "session_id", reason: "SENSITIVE_HIDDEN_TOKEN" }),
+      expect.objectContaining({ name: "requestNonce", reason: "SENSITIVE_HIDDEN_TOKEN" }),
+      expect.objectContaining({ name: "oneTimeCode", reason: "AUTOFILL_SECRET" }),
+      expect.objectContaining({
+        name: "attachment",
+        reason: "FILE_METADATA_NOT_OPTED_IN",
+      }),
+    ]),
+  );
+  expect(firstCore.excludedFields.every((field) => !("values" in field))).toBe(true);
+  expect(firstCore.origin.pageUrl).toBe(`${fixtureOrigin}/with-form`);
+  expect(firstCore.formDescriptor.actionUrl).toBe(`${fixtureOrigin}/submitted`);
 
-  await formPage.goto(`${fixtureOrigin}/without-form`);
+  await formPage.reload();
+  expect((await readExtensionState(worker)).receiptIndex).toHaveLength(1);
+  await panelPage.close();
+  panelPage = await context.newPage();
+  panelPage.on("pageerror", (error) => runtimeErrors.push(error.message));
+  await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
   await formPage.bringToFront();
-  await expect(panelPage.getByText("No form detected", { exact: true })).toBeVisible();
-  await expect(panelPage.getByText("This page has no standard form")).toBeVisible();
+  await expect(panelPage.getByText("Attempted", { exact: true }).first()).toBeVisible();
+  await expect(panelPage.getByText("Acceptance not yet confirmed.")).toBeVisible();
+
+  await formPage.goto(`${fixtureOrigin}/same-page-form`);
+  await formPage.bringToFront();
+  await formPage.evaluate(() => {
+    const form = document.querySelector<HTMLFormElement>("#same-page-form");
+    form?.requestSubmit();
+    form?.requestSubmit();
+  });
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(2);
+  expect(await formPage.locator("#submit-count").textContent()).toBe("2");
+
+  await formPage.waitForTimeout(1_700);
+  await formPage.evaluate(() => {
+    document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
+  });
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(3);
+  expect(await formPage.locator("#submit-count").textContent()).toBe("3");
+
+  capturedState = await readExtensionState(worker);
+  expect(new Set(capturedState.receiptIndex.map((receipt) => receipt.receiptId)).size).toBe(3);
+  expect(new Set(capturedState.receiptIndex.map((receipt) => receipt.receiptNonce)).size).toBe(3);
+  expect(new Set(capturedState.receiptIndex.map((receipt) => receipt.event.eventHash)).size).toBe(
+    3,
+  );
 
   await panelPage.getByRole("button", { name: "Open settings" }).click();
   await expect(panelPage.getByRole("heading", { name: "Settings" })).toBeVisible();
-  await expect(panelPage.getByText("0", { exact: true })).toBeVisible();
+  await expect(panelPage.getByText("3", { exact: true })).toBeVisible();
   await panelPage.getByLabel("Reminder interval").selectOption("3-days");
   await panelPage.getByLabel("Local retention").selectOption("30-days");
   await panelPage.getByLabel("Demo mode").check();
   await panelPage.getByRole("button", { name: "Save preferences" }).click();
-  await expect(
-    panelPage.getByText("Saved for the reminder feature implemented later."),
-  ).toBeVisible();
-  await panelPage.getByRole("button", { name: "Return to current site" }).click();
-  await expect(panelPage.getByText("No form detected", { exact: true })).toBeVisible();
+  await expect(panelPage.getByText("Preferences saved locally.")).toBeVisible();
 
-  await panelPage.getByRole("button", { name: "Revoke site access" }).click();
+  await panelPage.close();
+  await formPage.close();
+  await context.close();
+
+  context = await launchExtensionContext(userDataDirectory, browserExtensionPath);
+  worker = await getServiceWorker(context);
+  expect(worker.url().split("/")[2]).toBe(extensionId);
+  expect(await containsFixturePermission(worker)).toBe(true);
+  const restartedState = await readExtensionState(worker);
+  expect(restartedState.receiptIndex).toHaveLength(3);
+  expect(restartedState.settings).toMatchObject({
+    reminderInterval: "3-days",
+    retentionPreference: "30-days",
+    demoMode: true,
+  });
+
+  const restartTarget = await context.newPage();
+  await restartTarget.goto(`${fixtureOrigin}/same-page-form`);
+  const restartPanel = await context.newPage();
+  await restartPanel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await restartTarget.bringToFront();
+  await expect(restartPanel.getByText("Attempted", { exact: true }).first()).toBeVisible();
+  await expect(restartPanel.getByText("Acceptance not yet confirmed.")).toBeVisible();
+
+  await restartPanel.getByRole("button", { name: "Revoke site access" }).click();
   await expect.poll(() => containsFixturePermission(worker)).toBe(false);
-  const blockedProbe = await sendExtensionMessage(panelPage, {
+  await expect
+    .poll(async () =>
+      worker.evaluate(async () => {
+        const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+        return chromeApi.scripting.getRegisteredContentScripts({
+          ids: ["submittedit-attempt-capture"],
+        });
+      }),
+    )
+    .toEqual([]);
+
+  await restartTarget.evaluate(() => {
+    document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
+  });
+  await restartTarget.waitForTimeout(500);
+  expect((await readExtensionState(worker)).receiptIndex).toHaveLength(3);
+
+  const blockedProbe = await sendExtensionMessage(restartPanel, {
     type: "PROBE_CURRENT_SITE",
   });
   expect(blockedProbe).toMatchObject({ ok: false });
-
-  const storageAfterRevoke = await worker.evaluate(async (key) => {
-    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-    return chromeApi.storage.local.get(key);
-  }, EXTENSION_STORAGE_KEY);
-  expect(storageAfterRevoke[EXTENSION_STORAGE_KEY]).toMatchObject({
-    settings: {
-      reminderInterval: "3-days",
-      retentionPreference: "30-days",
-      demoMode: true,
-      revokedSites: [{ origin: fixtureOrigin }],
-    },
-    enabledOrigins: {},
-    receiptIndex: [],
-  });
 
   await worker.evaluate(async () => {
     const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
@@ -268,49 +437,17 @@ test("unpacked MV3 shell persists settings, probes minimally, and revokes access
     });
   });
 
-  await panelPage.close();
-  await formPage.close();
-  await context.close();
-
-  context = await launchExtensionContext(userDataDirectory, browserExtensionPath);
-  const restartedWorker = await getServiceWorker(context);
-  expect(restartedWorker.url().split("/")[2]).toBe(extensionId);
-  expect(await containsFixturePermission(restartedWorker)).toBe(false);
-
-  const persistedStorage = await restartedWorker.evaluate(async (key) => {
-    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-    return chromeApi.storage.local.get(key);
-  }, EXTENSION_STORAGE_KEY);
-  expect(persistedStorage[EXTENSION_STORAGE_KEY]).toMatchObject({
-    hasSeenWelcome: true,
-    settings: {
-      reminderInterval: "3-days",
-      retentionPreference: "30-days",
-      demoMode: true,
-      revokedSites: [{ origin: fixtureOrigin }],
-    },
-    receiptIndex: [],
-  });
-
-  const restartTarget = await context.newPage();
-  await restartTarget.goto(`${fixtureOrigin}/without-form`);
-  const restartPanel = await context.newPage();
-  await restartPanel.goto(`chrome-extension://${extensionId}/sidepanel.html`);
-  await restartTarget.bringToFront();
   await restartPanel.getByRole("button", { name: "Open settings" }).click();
   await expect(restartPanel.getByLabel("Reminder interval")).toHaveValue("3-days");
-  await expect(restartPanel.getByText(fixtureOrigin, { exact: true })).toBeVisible();
   await restartPanel.getByRole("button", { name: "Delete all local data" }).click();
   await restartPanel.getByRole("button", { name: "Yes, delete local data" }).click();
   await expect(
     restartPanel.getByRole("heading", { name: "Know what the browser can prove." }),
   ).toBeVisible();
 
-  const resetStorage = await restartedWorker.evaluate(async (key) => {
-    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-    return chromeApi.storage.local.get(key);
-  }, EXTENSION_STORAGE_KEY);
-  expect(resetStorage[EXTENSION_STORAGE_KEY]).toMatchObject({
+  const resetState = await readExtensionState(worker);
+  expect(resetState).toMatchObject({
+    schemaVersion: 2,
     hasSeenWelcome: false,
     settings: {
       reminderInterval: "off",
@@ -321,7 +458,7 @@ test("unpacked MV3 shell persists settings, probes minimally, and revokes access
     enabledOrigins: {},
     receiptIndex: [],
   });
-  const unrelatedStorage = await restartedWorker.evaluate(async () => {
+  const unrelatedStorage = await worker.evaluate(async () => {
     const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
     return chromeApi.storage.local.get("unrelated.test.value");
   });
@@ -331,7 +468,11 @@ test("unpacked MV3 shell persists settings, probes minimally, and revokes access
 
   expect(panelConsoleErrors).toEqual([]);
   expect(runtimeErrors).toEqual([]);
+  expect(observedHttpRequests.length).toBeGreaterThan(0);
   expect(observedHttpRequests.every((url) => url.startsWith(`${fixtureOrigin}/`))).toBe(true);
+  expect(
+    observedHttpRequests.some((url) => /monad|rpc|submittedit-demo-authority/iu.test(url)),
+  ).toBe(false);
 
   await context.close();
 });

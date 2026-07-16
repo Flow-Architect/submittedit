@@ -1,5 +1,7 @@
 import type { PageProbeResult, SiteContext } from "./messages";
 
+export const CAPTURE_CONTENT_COMMAND = "SUBMITTEDIT_CAPTURE_COMMAND";
+
 export type ProbeAuthorization =
   | {
       ok: true;
@@ -23,15 +25,21 @@ export function authorizePageProbe(
   return { ok: true, site };
 }
 
-export function minimalPageProbe() {
+export function captureStatusCommand() {
   return {
-    origin: globalThis.location.origin,
-    reachable: true as const,
-    formCount: globalThis.document.forms.length,
+    type: CAPTURE_CONTENT_COMMAND,
+    command: "STATUS" as const,
   };
 }
 
-export function parseMinimalProbeResult(
+export function captureUninstallCommand() {
+  return {
+    type: CAPTURE_CONTENT_COMMAND,
+    command: "UNINSTALL" as const,
+  };
+}
+
+export function parseCapturePageStatus(
   value: unknown,
   expectedOrigin: string,
 ): PageProbeResult | null {
@@ -41,19 +49,31 @@ export function parseMinimalProbeResult(
     Array.isArray(value) ||
     !("origin" in value) ||
     !("reachable" in value) ||
-    !("formCount" in value)
+    !("formCount" in value) ||
+    !("hasForm" in value) ||
+    !("unusuallySensitiveFieldCount" in value)
   ) {
     return null;
   }
   const candidate = value as Record<string, unknown>;
   if (
-    Object.keys(candidate).some((key) => !["origin", "reachable", "formCount"].includes(key)) ||
+    Object.keys(candidate).some(
+      (key) =>
+        !["origin", "reachable", "formCount", "hasForm", "unusuallySensitiveFieldCount"].includes(
+          key,
+        ),
+    ) ||
     candidate.origin !== expectedOrigin ||
     candidate.reachable !== true ||
     typeof candidate.formCount !== "number" ||
     !Number.isSafeInteger(candidate.formCount) ||
     candidate.formCount < 0 ||
-    candidate.formCount > 10_000
+    candidate.formCount > 10_000 ||
+    candidate.hasForm !== candidate.formCount > 0 ||
+    typeof candidate.unusuallySensitiveFieldCount !== "number" ||
+    !Number.isSafeInteger(candidate.unusuallySensitiveFieldCount) ||
+    candidate.unusuallySensitiveFieldCount < 0 ||
+    candidate.unusuallySensitiveFieldCount > 100_000
   ) {
     return null;
   }
@@ -62,6 +82,7 @@ export function parseMinimalProbeResult(
     origin: expectedOrigin,
     reachable: true,
     formCount: candidate.formCount,
-    hasForm: candidate.formCount > 0,
+    hasForm: candidate.hasForm,
+    unusuallySensitiveFieldCount: candidate.unusuallySensitiveFieldCount,
   };
 }

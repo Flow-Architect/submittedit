@@ -1,4 +1,5 @@
 import type { ExtensionError, PageProbeResult, PanelSnapshot } from "./messages";
+import type { LocalReceiptSummary } from "./storage-schema";
 
 export type ReachablePanelState =
   | { kind: "loading" }
@@ -13,18 +14,43 @@ export type ReachablePanelState =
       probe: PageProbeResult;
     }
   | {
-      kind: "form-detected";
+      kind: "prepared";
       snapshot: PanelSnapshot;
       probe: PageProbeResult;
+    }
+  | {
+      kind: "capturing";
+      snapshot: PanelSnapshot;
+      receiptId: string;
+      capturedAt: string;
+    }
+  | {
+      kind: "attempted";
+      snapshot: PanelSnapshot;
+      receipt: LocalReceiptSummary;
+      probe?: PageProbeResult;
+    }
+  | {
+      kind: "capture-error";
+      snapshot: PanelSnapshot;
+      error: ExtensionError;
+      capturedAt: string;
     }
   | { kind: "unavailable"; snapshot: PanelSnapshot }
   | { kind: "error"; error: ExtensionError; snapshot: PanelSnapshot | null };
 
 export type FuturePanelState =
-  | { kind: "capturing"; testFixtureOnly: true }
   | { kind: "receipt-pending"; testFixtureOnly: true }
   | { kind: "chain-anchoring"; testFixtureOnly: true }
   | { kind: "verified"; testFixtureOnly: true };
+
+function latestReceiptForSnapshot(snapshot: PanelSnapshot): LocalReceiptSummary | undefined {
+  if (snapshot.site.kind !== "supported") {
+    return undefined;
+  }
+  const siteOrigin = snapshot.site.origin;
+  return snapshot.recentReceipts.find((receipt) => receipt.origin === siteOrigin);
+}
 
 export function initialPanelState(): ReachablePanelState {
   return { kind: "loading" };
@@ -40,6 +66,10 @@ export function stateFromSnapshot(snapshot: PanelSnapshot): ReachablePanelState 
   if (!snapshot.site.permissionGranted) {
     return { kind: "site-not-enabled", snapshot };
   }
+  const latest = latestReceiptForSnapshot(snapshot);
+  if (latest) {
+    return { kind: "attempted", snapshot, receipt: latest };
+  }
   return { kind: "checking", snapshot };
 }
 
@@ -47,8 +77,12 @@ export function stateFromProbe(
   snapshot: PanelSnapshot,
   probe: PageProbeResult,
 ): ReachablePanelState {
+  const latest = latestReceiptForSnapshot(snapshot);
+  if (latest) {
+    return { kind: "attempted", snapshot, receipt: latest, probe };
+  }
   return probe.hasForm
-    ? { kind: "form-detected", snapshot, probe }
+    ? { kind: "prepared", snapshot, probe }
     : { kind: "no-form", snapshot, probe };
 }
 
@@ -60,7 +94,6 @@ export function stateAfterPermissionDecision(
 }
 
 export const futurePanelStateLabels: Record<FuturePanelState["kind"], string> = {
-  capturing: "Capturing",
   "receipt-pending": "Receipt pending",
   "chain-anchoring": "Chain anchoring",
   verified: "Verified",

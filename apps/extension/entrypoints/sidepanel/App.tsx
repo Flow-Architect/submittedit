@@ -4,6 +4,7 @@ import {
   type BackgroundResponse,
   type ExtensionError,
   type PanelSnapshot,
+  parseCaptureActivityEvent,
   type RuntimeRequest,
 } from "../../lib/messages";
 import {
@@ -14,8 +15,10 @@ import {
   stateFromSnapshot,
 } from "../../lib/panel-state";
 import {
+  EXTENSION_STORAGE_KEY,
   REMINDER_INTERVALS,
   RETENTION_PREFERENCES,
+  type LocalReceiptSummary,
   type ReminderInterval,
   type RetentionPreference,
 } from "../../lib/storage-schema";
@@ -79,6 +82,17 @@ function originFromSnapshot(snapshot: PanelSnapshot | null): string | null {
   return snapshot?.site.kind === "supported" ? snapshot.site.origin : null;
 }
 
+function shortReceiptId(receiptId: string): string {
+  return `${receiptId.slice(0, 10)}…${receiptId.slice(-8)}`;
+}
+
+function formattedTime(timestamp: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(timestamp));
+}
+
 function SiteIdentity({ snapshot }: { snapshot: PanelSnapshot | null }) {
   const origin = originFromSnapshot(snapshot);
   return (
@@ -133,6 +147,47 @@ function SiteActions({
   );
 }
 
+function ReceiptSummary({ receipt }: { receipt: LocalReceiptSummary }) {
+  return (
+    <li className="receipt-summary">
+      <div className="receipt-summary-heading">
+        <strong>
+          <span aria-hidden="true">→</span> Attempted
+        </strong>
+        <time dateTime={receipt.capturedAt}>{formattedTime(receipt.capturedAt)}</time>
+      </div>
+      <code title={receipt.receiptId}>{shortReceiptId(receipt.receiptId)}</code>
+      <span>{receipt.origin}</span>
+    </li>
+  );
+}
+
+function ReceiptHistory({ snapshot }: { snapshot: PanelSnapshot | null }) {
+  if (!snapshot?.recentReceipts.length) {
+    return null;
+  }
+  return (
+    <section className="receipt-history" aria-labelledby="recent-receipts-heading">
+      <div className="section-heading">
+        <div>
+          <span className="eyebrow">Local evidence</span>
+          <h2 id="recent-receipts-heading">Recent attempts</h2>
+        </div>
+        <strong className="count-badge">{snapshot.receiptIndexCount}</strong>
+      </div>
+      <ul className="receipt-list">
+        {snapshot.recentReceipts.map((receipt) => (
+          <ReceiptSummary key={receipt.receiptId} receipt={receipt} />
+        ))}
+      </ul>
+      <p className="fine-print">
+        These records remain only in this Chrome profile. They are not signed, encrypted, uploaded,
+        or anchored onchain in this milestone.
+      </p>
+    </section>
+  );
+}
+
 export function App() {
   const [panelState, setPanelState] = useState<ReachablePanelState>(initialPanelState);
   const [screen, setScreen] = useState<PanelScreen>("site");
@@ -173,7 +228,12 @@ export function App() {
       });
       const nextState = stateFromSnapshot(snapshot);
       setPanelState(nextState);
-      if (probeEnabledSite && nextState.kind === "checking") {
+      if (
+        probeEnabledSite &&
+        snapshot.site.kind === "supported" &&
+        snapshot.site.permissionGranted &&
+        !snapshot.welcomeRequired
+      ) {
         await runProbe(snapshot);
       }
     },
@@ -217,18 +277,92 @@ export function App() {
     const handlePermissionChange = () => {
       void refresh();
     };
+    const handleStorageChange = (changes: Record<string, unknown>, areaName: string) => {
+      if (areaName === "local" && EXTENSION_STORAGE_KEY in changes) {
+        void refresh(false);
+      }
+    };
+    const handleCaptureActivity = (message: unknown) => {
+      const activity = parseCaptureActivityEvent(message);
+      if (!activity) {
+        return undefined;
+      }
+      const snapshot = snapshotFromState(panelState);
+      const currentOrigin = originFromSnapshot(snapshot);
+      if (!snapshot) {
+        void refresh(false);
+        return undefined;
+      }
+      if (activity.phase === "CAPTURING") {
+        if (currentOrigin === activity.origin) {
+          setPanelState({
+            kind: "capturing",
+            snapshot,
+            receiptId: activity.receiptId,
+            capturedAt: activity.capturedAt,
+          });
+        }
+        return undefined;
+      }
+      if (activity.phase === "CAPTURED") {
+        if (currentOrigin !== activity.receipt.origin) {
+          void refresh(false);
+          return undefined;
+        }
+        setPanelState({
+          kind: "attempted",
+          snapshot: {
+            ...snapshot,
+            receiptIndexCount: Math.max(
+              snapshot.receiptIndexCount,
+              snapshot.recentReceipts.some(
+                (receipt) => receipt.receiptId === activity.receipt.receiptId,
+              )
+                ? snapshot.receiptIndexCount
+                : snapshot.receiptIndexCount + 1,
+            ),
+            recentReceipts: [
+              activity.receipt,
+              ...snapshot.recentReceipts.filter(
+                (receipt) => receipt.receiptId !== activity.receipt.receiptId,
+              ),
+            ].slice(0, 10),
+          },
+          receipt: activity.receipt,
+        });
+        void refresh(false);
+        return undefined;
+      }
+      if (currentOrigin === activity.origin) {
+        setPanelState({
+          kind: "capture-error",
+          snapshot,
+          capturedAt: activity.capturedAt,
+          error: {
+            code: activity.code,
+            message: activity.message,
+            recoverable: true,
+          },
+        });
+      }
+      return undefined;
+    };
 
     browser.tabs.onActivated.addListener(handleTabActivated);
     browser.tabs.onUpdated.addListener(handleTabUpdated);
     browser.permissions.onAdded.addListener(handlePermissionChange);
     browser.permissions.onRemoved.addListener(handlePermissionChange);
+    browser.storage.onChanged.addListener(handleStorageChange);
+    browser.runtime.onMessage.addListener(handleCaptureActivity);
     return () => {
       browser.tabs.onActivated.removeListener(handleTabActivated);
       browser.tabs.onUpdated.removeListener(handleTabUpdated);
       browser.permissions.onAdded.removeListener(handlePermissionChange);
       browser.permissions.onRemoved.removeListener(handlePermissionChange);
+      browser.storage.onChanged.removeListener(handleStorageChange);
+      browser.runtime.onMessage.removeListener(handleCaptureActivity);
     };
-  }, [refresh]);
+  }, [panelState, refresh]);
 
   const currentSnapshot = snapshotFromState(panelState);
 
@@ -250,7 +384,6 @@ export function App() {
 
     let granted = false;
     try {
-      // This call intentionally starts directly inside the button gesture.
       granted = await browser.permissions.request({
         origins: [permissionPattern],
       });
@@ -321,7 +454,7 @@ export function App() {
       setScreen("site");
       return;
     }
-    setSettingsNotice("Saved for the reminder feature implemented later.");
+    setSettingsNotice("Preferences saved locally.");
     await applySnapshot(response.snapshot, false);
     setScreen("settings");
   };
@@ -356,11 +489,9 @@ export function App() {
       case "loading":
         return (
           <section className="evidence-card" aria-live="polite">
-            <StateBadge symbol="…" tone="neutral">
-              Loading local extension state
-            </StateBadge>
+            <StateBadge symbol="…">Loading local extension state</StateBadge>
             <h1>Opening your evidence panel</h1>
-            <p>SubmittedIt is checking only its own local settings.</p>
+            <p>SubmittedIt is checking its local settings and receipts.</p>
           </section>
         );
       case "welcome":
@@ -369,8 +500,9 @@ export function App() {
             <StateBadge symbol="○">Welcome</StateBadge>
             <h1>Know what the browser can prove.</h1>
             <p>
-              This shell checks whether a page has a form only after you grant access to that exact
-              site. It does not read field values or create submission receipts yet.
+              After you grant access to one exact site, SubmittedIt can record a standard form
+              attempt locally. Passwords, protected tokens, autofill secrets, and file contents are
+              excluded.
             </p>
             <button className="button button-primary" onClick={dismissWelcome}>
               Continue
@@ -384,13 +516,13 @@ export function App() {
             <h1>Enable only this site?</h1>
             <p>
               Chrome will ask for optional access to the exact origin shown above. SubmittedIt will
-              then count forms—never read their values.
+              then attach its reviewed standard-form listener on that origin.
             </p>
             <button className="button button-primary" onClick={enableCurrentSite}>
               Enable SubmittedIt on this site
             </button>
             <p className="fine-print">
-              Site access is optional and can be revoked here at any time.
+              Access is optional, revocable, and never grants install-time access to every site.
             </p>
           </section>
         );
@@ -401,7 +533,7 @@ export function App() {
               Permission request in progress
             </StateBadge>
             <h1>Review Chrome’s request</h1>
-            <p>Grant access only if the origin in Chrome matches the origin shown above.</p>
+            <p>Grant access only if Chrome names the exact origin shown above.</p>
           </section>
         );
       case "permission-denied":
@@ -411,7 +543,7 @@ export function App() {
               Permission denied
             </StateBadge>
             <h1>No page access was granted</h1>
-            <p>SubmittedIt did not check the page. You can try again or leave the site disabled.</p>
+            <p>SubmittedIt did not inspect or capture this page.</p>
             <button className="button button-primary" onClick={enableCurrentSite}>
               Try enabling again
             </button>
@@ -423,8 +555,8 @@ export function App() {
             <StateBadge symbol="…" tone="attention">
               Checking enabled site
             </StateBadge>
-            <h1>Looking only for forms</h1>
-            <p>The privacy-safe probe returns the current origin and form count.</p>
+            <h1>Attaching local capture</h1>
+            <p>SubmittedIt is checking for standard forms without reading page text.</p>
           </section>
         );
       case "no-form":
@@ -433,8 +565,8 @@ export function App() {
             <StateBadge symbol="○">No form detected</StateBadge>
             <h1>This page has no standard form</h1>
             <p>
-              The enabled-site probe found {panelState.probe.formCount} forms. No field values or
-              page text were read.
+              No new capture can start here. Existing local Attempted receipts remain available
+              below.
             </p>
             <SiteActions
               onCheck={() => void runProbe(panelState.snapshot)}
@@ -443,17 +575,116 @@ export function App() {
             />
           </section>
         );
-      case "form-detected":
+      case "prepared":
         return (
           <section className="evidence-card" aria-live="polite">
-            <StateBadge symbol="◆" tone="positive">
-              Form detected
-            </StateBadge>
-            <h1>A standard form is present</h1>
+            <StateBadge symbol="○">Prepared</StateBadge>
+            <h1>Ready locally. Not submitted.</h1>
             <p>
-              The enabled-site probe found {panelState.probe.formCount}{" "}
-              {panelState.probe.formCount === 1 ? "form" : "forms"}. Submission capture begins in a
-              later milestone.
+              The reviewed capture listener is active for{" "}
+              {panelState.probe.formCount === 1
+                ? "this standard form"
+                : `${panelState.probe.formCount} standard forms`}
+              . A receipt is created only when the browser observes an actual submit event.
+            </p>
+            {panelState.probe.unusuallySensitiveFieldCount > 0 ? (
+              <div className="capture-warning" role="note">
+                <strong>Review unusually sensitive fields before submitting.</strong>
+                <span>
+                  SubmittedIt detected {panelState.probe.unusuallySensitiveFieldCount} field
+                  {panelState.probe.unusuallySensitiveFieldCount === 1 ? "" : "s"} whose structure
+                  may contain sensitive information. Protected secrets are excluded, but ordinary
+                  captured values remain in local Chrome storage.
+                </span>
+              </div>
+            ) : (
+              <div className="capture-boundary" role="note">
+                <strong>Automatic exclusions</strong>
+                <span>
+                  Passwords, CSRF/auth/session/nonce/token fields, autofill secrets, disabled and
+                  unchecked controls, and file contents are not stored.
+                </span>
+              </div>
+            )}
+            <SiteActions
+              onCheck={() => void runProbe(panelState.snapshot)}
+              onRevoke={() => void revokeCurrentSite()}
+              busy={false}
+            />
+          </section>
+        );
+      case "capturing":
+        return (
+          <section className="evidence-card" aria-live="assertive">
+            <StateBadge symbol="…" tone="attention">
+              Capture in progress
+            </StateBadge>
+            <h1>Recording this browser attempt</h1>
+            <p>
+              The website’s submission is not blocked. SubmittedIt will not claim a receipt until
+              local persistence succeeds.
+            </p>
+            <code className="receipt-id">{shortReceiptId(panelState.receiptId)}</code>
+          </section>
+        );
+      case "attempted":
+        return (
+          <section className="evidence-card attempted-card" aria-live="assertive">
+            <StateBadge symbol="→" tone="attention">
+              Attempted
+            </StateBadge>
+            <h1>Submission attempt captured.</h1>
+            <p className="attempt-callout">Acceptance not yet confirmed.</p>
+            <dl className="receipt-details">
+              <div>
+                <dt>Receipt</dt>
+                <dd>
+                  <code title={panelState.receipt.receiptId}>
+                    {shortReceiptId(panelState.receipt.receiptId)}
+                  </code>
+                </dd>
+              </div>
+              <div>
+                <dt>Origin</dt>
+                <dd>{panelState.receipt.origin}</dd>
+              </div>
+              <div>
+                <dt>Captured</dt>
+                <dd>
+                  <time dateTime={panelState.receipt.capturedAt}>
+                    {formattedTime(panelState.receipt.capturedAt)}
+                  </time>
+                </dd>
+              </div>
+            </dl>
+            <div className="pending-warning" role="note">
+              <strong>Still missing</strong>
+              <span>Site processing evidence and an authoritative acknowledgment.</span>
+            </div>
+            {panelState.probe?.hasForm ? (
+              <p className="fine-print">
+                A standard form is also ready on this page. A later intentional submission will
+                create a distinct receipt.
+              </p>
+            ) : null}
+            <SiteActions
+              onCheck={() => void runProbe(panelState.snapshot)}
+              onRevoke={() => void revokeCurrentSite()}
+              busy={false}
+            />
+          </section>
+        );
+      case "capture-error":
+        return (
+          <section className="evidence-card" aria-live="assertive">
+            <StateBadge symbol="!" tone="attention">
+              Capture failed
+            </StateBadge>
+            <h1>No receipt was created</h1>
+            <p>{panelState.error.message}</p>
+            <p className="fine-print">
+              The website may still have handled its submission. SubmittedIt is making no evidence
+              claim for this attempt.
             </p>
             <SiteActions
               onCheck={() => void runProbe(panelState.snapshot)}
@@ -534,11 +765,12 @@ export function App() {
         <>
           <SiteIdentity snapshot={currentSnapshot} />
           {renderSiteState()}
+          <ReceiptHistory snapshot={currentSnapshot} />
           <aside className="privacy-note" aria-label="Privacy boundary">
-            <strong>Private by default.</strong>
+            <strong>Local-only Attempted evidence.</strong>
             <span>
-              No telemetry, page upload, form-value reading, receipt creation, or blockchain
-              transaction occurs in this shell.
+              No telemetry, portal API call, extension signature, encryption, authority outcome, or
+              blockchain transaction occurs in this capture flow.
             </span>
           </aside>
         </>
@@ -547,7 +779,7 @@ export function App() {
           <div>
             <span className="eyebrow">Local preferences</span>
             <h1>Settings</h1>
-            <p>These choices stay in Chrome’s extension storage on this browser.</p>
+            <p>These choices and Attempted receipts stay in this Chrome profile.</p>
           </div>
 
           <form className="settings-form" onSubmit={saveSettings}>
@@ -598,13 +830,13 @@ export function App() {
                   </option>
                 ))}
               </select>
-              <span>Retention is a preference for future local receipts.</span>
+              <span>Automatic retention enforcement is implemented in a later milestone.</span>
             </label>
 
             <label className="toggle-row">
               <span>
                 <strong>Demo mode</strong>
-                <small>Store this preference for future demo-specific behavior.</small>
+                <small>Marks this profile’s preference for synthetic demo workflows.</small>
               </span>
               <input
                 type="checkbox"
@@ -629,7 +861,7 @@ export function App() {
             <div className="section-heading">
               <div>
                 <h2>Local receipt index</h2>
-                <p>Receipts are not created by this shell.</p>
+                <p>Canonical Attempted events stored in this Chrome profile.</p>
               </div>
               <strong className="count-badge">{snapshotForSettings?.receiptIndexCount ?? 0}</strong>
             </div>
@@ -669,8 +901,8 @@ export function App() {
           <section className="settings-section danger-zone">
             <h2>Delete all local data</h2>
             <p>
-              Clears SubmittedIt settings, enabled-site metadata, revoked-site history, and the
-              empty receipt index. Granted site access is removed.
+              Clears SubmittedIt settings, Attempted receipts, enabled-site metadata, and
+              revoked-site history. Granted site access is removed.
             </p>
             {!confirmDelete ? (
               <button
@@ -682,7 +914,7 @@ export function App() {
               </button>
             ) : (
               <div className="confirm-panel" role="alert">
-                <strong>Return SubmittedIt to its initial local state?</strong>
+                <strong>Delete every local SubmittedIt receipt and preference?</strong>
                 <div className="confirm-actions">
                   <button className="button button-danger" type="button" onClick={deleteLocalData}>
                     Yes, delete local data

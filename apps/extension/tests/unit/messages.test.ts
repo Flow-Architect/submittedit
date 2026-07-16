@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_RUNTIME_MESSAGE_BYTES,
+  parseCaptureActivityEvent,
   parseRuntimeRequest,
   runtimeMessageByteLength,
 } from "../../lib/messages";
+import { syntheticCaptureRequest } from "./fixtures";
 
 describe("runtime message schema", () => {
   it.each([
@@ -27,6 +29,11 @@ describe("runtime message schema", () => {
     },
   ])("accepts a narrow valid message: %#", (message) => {
     expect(parseRuntimeRequest(message)).toEqual(message);
+  });
+
+  it("accepts a strict bounded capture message", () => {
+    const capture = syntheticCaptureRequest();
+    expect(parseRuntimeRequest(capture)).toEqual(capture);
   });
 
   it.each([
@@ -53,17 +60,11 @@ describe("runtime message schema", () => {
       retentionPreference: "90-days",
       demoMode: true,
     },
-    {
-      type: "UPDATE_SETTINGS",
-      reminderInterval: "off",
-      retentionPreference: "forever",
-      demoMode: true,
-    },
   ])("rejects malformed or expanded messages: %#", (message) => {
     expect(parseRuntimeRequest(message)).toBeNull();
   });
 
-  it("rejects oversized messages", () => {
+  it("rejects oversized ordinary messages", () => {
     expect(
       parseRuntimeRequest({
         type: "BOOTSTRAP",
@@ -72,7 +73,7 @@ describe("runtime message schema", () => {
     ).toBeNull();
   });
 
-  it("measures the serialized UTF-8 byte length rather than UTF-16 characters", () => {
+  it("measures serialized UTF-8 bytes", () => {
     const message = {
       type: "BOOTSTRAP",
       padding: "🙂".repeat(Math.floor(MAX_RUNTIME_MESSAGE_BYTES / 3)),
@@ -80,5 +81,32 @@ describe("runtime message schema", () => {
     expect(JSON.stringify(message).length).toBeLessThanOrEqual(MAX_RUNTIME_MESSAGE_BYTES);
     expect(runtimeMessageByteLength(message)).toBeGreaterThan(MAX_RUNTIME_MESSAGE_BYTES);
     expect(parseRuntimeRequest(message)).toBeNull();
+  });
+
+  it("parses only strict panel capture activity", () => {
+    const event = {
+      type: "CAPTURE_ACTIVITY",
+      phase: "CAPTURED",
+      receipt: {
+        receiptId: `0x${"1".repeat(64)}`,
+        eventHash: `0x${"2".repeat(64)}`,
+        capturedAt: "2026-07-16T16:00:00.000Z",
+        origin: "https://example.com",
+        status: "ATTEMPTED",
+      },
+      deduplicated: false,
+    };
+    expect(parseCaptureActivityEvent(event)).toEqual(event);
+    expect(parseCaptureActivityEvent({ ...event, accepted: true })).toBeNull();
+    expect(
+      parseCaptureActivityEvent({
+        type: "CAPTURE_ACTIVITY",
+        phase: "ERROR",
+        origin: "https://example.com",
+        code: "NOT_A_REAL_ERROR",
+        message: "No receipt was created.",
+        capturedAt: "2026-07-16T16:00:00.000Z",
+      }),
+    ).toBeNull();
   });
 });
