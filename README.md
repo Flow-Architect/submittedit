@@ -20,9 +20,22 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 04 integrity foundation plus a Goal 05 deployment-preparation checkpoint: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity registry, reproducible verification metadata, an environment-driven Testnet RPC boundary, a generated typed contract-client boundary, fixed Node/Chromium vectors, the reviewed identity system, buildable application shells, and CI. Browser capture, encryption, real signing/verification, contract deployment, and product workflows are not implemented yet.
+The repository currently contains the Goal 05 integrity and deployment foundation: strict browser-safe receipt/event schemas, deterministic canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity registry deployed and source-verified on Monad Testnet, a reviewed deployment manifest, an environment-driven RPC boundary, a generated typed contract-client read boundary, fixed Node/Chromium vectors, the reviewed identity system, buildable application shells, and CI. Browser capture, encryption, real signing/verification, relay behavior, and product workflows are not implemented yet.
 
 See [the product contract](docs/PRODUCT_CONTRACT.md), [receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md), [deployment runbook](docs/DEPLOYMENT.md), [threat model](docs/THREAT_MODEL.md), [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md), [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md), [architecture](docs/ARCHITECTURE.md), and [hackathon compliance requirements](docs/HACKATHON_COMPLIANCE.md).
+
+## Live Monad Testnet deployment
+
+`SubmissionReceiptRegistry` protocol version 1 is live on Monad Testnet, chain ID `10143`:
+
+- Contract: [`0x63914900a2D3571F92506821a76c4036C3e25883`](https://testnet.monadvision.com/address/0x63914900a2D3571F92506821a76c4036C3e25883)
+- Deployment transaction: [`0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e`](https://testnet.monadvision.com/tx/0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e)
+- Deployment block: [`45213264`](https://testnet.monadvision.com/block/45213264)
+- Alternate Monadscan [contract](https://testnet.monadscan.com/address/0x63914900a2D3571F92506821a76c4036C3e25883) and [transaction](https://testnet.monadscan.com/tx/0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e)
+- Runtime: `1913` bytes, Keccak-256 `0xfbd38ff7e797a7c959d4d55b2eb6dd3987640e60bb97ffbb5b838b0021aeefae`
+- Source verification: [MonadVision/Sourcify job](https://sourcify-api-monad.blockvision.org/v2/verify/e136f18f-a9ba-4dac-879c-be0193376ec6) reported overall `match` and runtime `match`; `creationMatch` was `null`, so separate creation-bytecode verification is not claimed.
+
+The public manifest is [`deployments/monad-testnet.json`](deployments/monad-testnet.json). One [development-only health-check transaction](https://testnet.monadvision.com/tx/0x389b2f951a84414e9824cd6d13f9d8dedb06c978c88e2865b875551f06fb04cb) proves that the live contract accepts a valid synthetic Attempted event. That receipt is not product data, user data, a real filing, proof of acceptance, or judge-demo data, and it is excluded from the normal contract-client API.
 
 ## Workspace
 
@@ -71,6 +84,7 @@ foundryup --network monad
 pnpm install --frozen-lockfile
 pnpm check
 pnpm test:e2e
+pnpm contract:deployment:check
 export MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
 cd contracts
 forge fmt --check
@@ -81,7 +95,7 @@ cd ..
 pnpm contract:abi:check
 ```
 
-`pnpm check` runs formatting, deterministic icon verification, linting, strict type-checking, unit tests, all workspace builds and package export smoke checks, real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the neutral web-foundation check plus the browser parity check. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a contract build, `pnpm contract:abi` regenerates the reviewed ABI and `pnpm contract:abi:check` proves it still matches compiler output.
+`pnpm check` validates the deterministic deployment manifest/client export, formatting, icons, linting, strict types, unit tests, all workspace builds and package exports, real-Chromium receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the neutral web-foundation check plus the browser parity check. Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a contract build, `pnpm contract:abi` regenerates the reviewed ABI and `pnpm contract:abi:check` proves it still matches compiler output.
 
 Copy only the environment example relevant to the component you are running. The committed examples contain public development defaults and no credentials. Foundry deliberately has no implicit RPC fallback: export `MONAD_TESTNET_RPC_URL` in each clean shell before a contract command, and never commit a real `.env` file.
 
@@ -95,9 +109,9 @@ This starts the Next.js and WXT development processes together. Run one shell in
 
 ## Monad and Monskills
 
-The guarded contract tooling targets Monad Testnet chain ID `10143`. Raw private form values cannot enter the registry interface. The primary future verification route is MonadVision through its official Sourcify endpoint; Monadscan/Etherscan is optional. Goal 05 preparation created no wallet, private key, contract address, transaction, deployment, or verification result; those runtime details must come only from a later live deployment checkpoint.
+The guarded contract tooling targets Monad Testnet chain ID `10143`. Raw private form values cannot enter the registry interface. MonadVision through its Sourcify endpoint reports the verified deployment's overall and runtime matches; Monadscan provides an independent explorer view. The manifest and exact read-only commands in [the deployment runbook](docs/DEPLOYMENT.md) keep those claims reproducible without wallet access.
 
-Official Monskills guidance was used only for scaffold boundaries, verified network/address handling, future wallet/deployment safety, and future explorer verification. The committed `.monskills` marker records the testnet target; locally installed skill files are not copied into this repository.
+Official Monskills guidance was used for scaffold boundaries, verified network/address handling, wallet/deployment safety, and current explorer discovery. The committed `.monskills` marker records the testnet target; locally installed skill files are not copied into this repository.
 
 ## License
 

@@ -13,6 +13,8 @@
     "build": "pnpm --recursive --if-present build",
     "contract:abi": "node contracts/scripts/export-abi.mjs",
     "contract:abi:check": "node contracts/scripts/export-abi.mjs --check",
+    "contract:deployment": "node packages/contract-client/scripts/sync-deployment.mjs",
+    "contract:deployment:check": "node packages/contract-client/scripts/sync-deployment.mjs --check",
     "lint": "eslint . --max-warnings=0",
     "format": "prettier --write . --ignore-unknown",
     "format:check": "prettier --check . --ignore-unknown",
@@ -23,7 +25,7 @@
     "test:browser-parity": "pnpm --filter @submittedit/receipt-core build && pnpm --filter @submittedit/receipt-core test:exports && playwright test --config playwright.receipt-core.config.ts",
     "test:e2e": "playwright test && pnpm test:browser-parity && pnpm --filter @submittedit/web typegen",
     "secrets:check": "node scripts/check-secrets.mjs",
-    "check": "pnpm format:check && pnpm icons:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @submittedit/contract-client test:exports && pnpm test:browser-parity && pnpm secrets:check"
+    "check": "pnpm contract:deployment:check && pnpm format:check && pnpm icons:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @submittedit/contract-client test:exports && pnpm test:browser-parity && pnpm secrets:check"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

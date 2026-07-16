@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "1.0",
+  "network": {
+    "name": "Monad Testnet",
+    "chainId": 10143
+  },
+  "contract": {
+    "name": "SubmissionReceiptRegistry",
+    "address": "0x63914900a2D3571F92506821a76c4036C3e25883",
+    "protocolVersion": 1,
+    "fullyQualifiedSource": "src/SubmissionReceiptRegistry.sol:SubmissionReceiptRegistry"
+  },
+  "compilation": {
+    "solidityVersion": "0.8.30+commit.73712a01",
+    "optimizer": {
+      "enabled": true,
+      "runs": 200
+    },
+    "evmVersion": "osaka",
+    "metadata": {
+      "cbor": true,
+      "bytecodeHash": "none",
+      "useLiteralContent": true
+    },
+    "abiSha256": "e3620a954c3e3426a244cac025af41afd2bbfb116eecafb7dad6e186cdb50165"
+  },
+  "deployment": {
+    "transactionHash": "0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e",
+    "blockNumber": "45213264",
+    "deployer": "0xD509Af69953aAB34dB20e46F0d104348639976fD",
+    "deployedAt": "2026-07-15T19:57:39Z",
+    "sourceCommit": "d5250f0e3621e483bf27a0edfc538e2f02178473"
+  },
+  "runtimeBytecode": {
+    "sizeBytes": 1913,
+    "keccak256": "0xfbd38ff7e797a7c959d4d55b2eb6dd3987640e60bb97ffbb5b838b0021aeefae"
+  },
+  "sourceVerification": {
+    "provider": "MonadVision / Sourcify",
+    "jobId": "e136f18f-a9ba-4dac-879c-be0193376ec6",
+    "jobUrl": "https://sourcify-api-monad.blockvision.org/v2/verify/e136f18f-a9ba-4dac-879c-be0193376ec6",
+    "completed": true,
+    "status": "match",
+    "runtimeMatch": "match",
+    "creationMatch": null,
+    "verifiedAt": "2026-07-15T23:11:20Z"
+  },
+  "explorers": {
+    "monadVision": {
+      "baseUrl": "https://testnet.monadvision.com",
+      "contractUrl": "https://testnet.monadvision.com/address/0x63914900a2D3571F92506821a76c4036C3e25883",
+      "deploymentTransactionUrl": "https://testnet.monadvision.com/tx/0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e",
+      "deploymentBlockUrl": "https://testnet.monadvision.com/block/45213264",
+      "healthCheckTransactionUrl": "https://testnet.monadvision.com/tx/0x389b2f951a84414e9824cd6d13f9d8dedb06c978c88e2865b875551f06fb04cb"
+    },
+    "monadscan": {
+      "baseUrl": "https://testnet.monadscan.com",
+      "contractUrl": "https://testnet.monadscan.com/address/0x63914900a2D3571F92506821a76c4036C3e25883",
+      "deploymentTransactionUrl": "https://testnet.monadscan.com/tx/0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e",
+      "deploymentBlockUrl": "https://testnet.monadscan.com/block/45213264",
+      "healthCheckTransactionUrl": "https://testnet.monadscan.com/tx/0x389b2f951a84414e9824cd6d13f9d8dedb06c978c88e2865b875551f06fb04cb"
+    }
+  },
+  "developmentOnlyHealthCheck": {
+    "label": "DEVELOPMENT_ONLY",
+    "transactionHash": "0x389b2f951a84414e9824cd6d13f9d8dedb06c978c88e2865b875551f06fb04cb",
+    "blockNumber": "45314962",
+    "receiptId": "0xeecc8474e8dd954143ad2eff0435a59a70f2cb008bf778193b72a40be742b46b",
+    "eventHash": "0xcd2a2ede94ebb7844e3465204cfe6a4d2722cb44c9eef9abb68aeaf3ff147dc1",
+    "stage": "ATTEMPTED",
+    "stageValue": 1,
+    "eventCount": 1,
+    "anchoredAt": "1784176161",
+    "anchoredAtUtc": "2026-07-16T04:29:21Z",
+    "warning": "Development-only contract health check. Never use this receipt or transaction as product, user, relay, demo, or automated-judge data."
+  }
+}

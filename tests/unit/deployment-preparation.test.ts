@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const repositoryRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 const readText = (path: string) => readFileSync(resolve(repositoryRoot, path), "utf8");
 
-describe("Monad deployment preparation", () => {
+describe("Monad deployment configuration", () => {
   it("locks reproducible verification metadata and an environment-driven RPC", () => {
     const config = readText("contracts/foundry.toml");
 
@@ -33,14 +33,16 @@ describe("Monad deployment preparation", () => {
     expect(workflow).not.toMatch(/PRIVATE_KEY|MNEMONIC|unsafe-password/i);
   });
 
-  it("documents an undeployed, keyless primary verification route", () => {
+  it("documents the verified deployment and keyless read-only verification route", () => {
     const runbook = readText("docs/DEPLOYMENT.md");
 
-    expect(runbook).toContain("is **not deployed or verified**");
-    expect(runbook).toContain("$SUBMITTEDIT_CONTRACT_ADDRESS");
+    expect(runbook).toContain("0x63914900a2D3571F92506821a76c4036C3e25883");
+    expect(runbook).toContain("0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e");
     expect(runbook).toContain("--verifier sourcify");
     expect(runbook).toContain("https://sourcify-api-monad.blockvision.org/");
-    expect(runbook).toContain("Monadscan/Etherscan is an optional secondary route");
-    expect(runbook).not.toMatch(/0x[0-9a-f]{40}/i);
+    expect(runbook).toContain("creationMatch` was `null`");
+    expect(runbook).toContain("development-only");
+    expect(runbook).not.toContain("is **not deployed or verified**");
+    expect(runbook).not.toMatch(/\/home\/|\.foundry\/keystores/);
   });
 });

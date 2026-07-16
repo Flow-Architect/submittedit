@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import {
   CURRENT_SCHEMA_VERSION,
   DERIVED_RECEIPT_STATUSES,
@@ -7,21 +10,32 @@ import {
   type ChainAnchorPayload,
 } from "../../receipt-core/src/index.ts";
 import { describe, expect, it } from "vitest";
+import { getAddress } from "viem";
+import * as contractClient from "../src/index.ts";
 import {
   CONTRACT_EVENT_NAMES,
   CONTRACT_RECEIPT_STAGES,
   ContractProjectionError,
+  SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
   SUBMISSION_RECEIPT_REGISTRY_PROTOCOL_VERSION,
+  SUBMITTEDIT_MONAD_TESTNET_CHAIN_ID,
   ZERO_BYTES32,
   createSubmissionReceiptRegistryAnchorRequest,
   fromContractReceiptStage,
   submissionReceiptRegistryAbi,
+  submissionReceiptRegistryDeployment,
+  submissionReceiptRegistryReadConfig,
   submittedItChain,
   toContractReceiptStage,
   type Bytes32Hex,
   type ReceiptCoreChainAnchorProjection,
   type ReceiptCoreEventStage,
 } from "../src/index.ts";
+
+const packageDirectory = fileURLToPath(new URL("../", import.meta.url));
+const deploymentManifest = JSON.parse(
+  readFileSync(new URL("../../../deployments/monad-testnet.json", import.meta.url), "utf8"),
+) as Record<string, unknown>;
 
 const bytes32 = (byte: string): Bytes32Hex => `0x${byte.repeat(64)}`;
 
@@ -216,5 +230,85 @@ describe("compiled ABI compatibility", () => {
       "eventCount",
       "protocolVersion",
     ]);
+  });
+});
+
+describe("verified Monad Testnet deployment", () => {
+  it("exports the reviewed live chain, checksum address, and read configuration", () => {
+    expect(SUBMITTEDIT_MONAD_TESTNET_CHAIN_ID).toBe(10143);
+    expect(SUBMITTEDIT_MONAD_TESTNET_CHAIN_ID).toBe(submittedItChain.id);
+    expect(SUBMISSION_RECEIPT_REGISTRY_ADDRESS).toBe("0x63914900a2D3571F92506821a76c4036C3e25883");
+    expect(getAddress(SUBMISSION_RECEIPT_REGISTRY_ADDRESS)).toBe(
+      SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
+    );
+    expect(SUBMISSION_RECEIPT_REGISTRY_ADDRESS).not.toBe(
+      "0x0000000000000000000000000000000000000000",
+    );
+    expect(
+      new Set(SUBMISSION_RECEIPT_REGISTRY_ADDRESS.slice(2).toLowerCase()).size,
+    ).toBeGreaterThan(4);
+    expect(submissionReceiptRegistryReadConfig).toEqual({
+      abi: submissionReceiptRegistryAbi,
+      address: SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
+      chainId: 10143,
+    });
+  });
+
+  it("matches the deterministic manifest and reviewed deployment evidence", () => {
+    expect(submissionReceiptRegistryDeployment).toMatchObject({
+      manifestSchemaVersion: "1.0",
+      network: { name: "Monad Testnet", chainId: 10143 },
+      contract: {
+        name: "SubmissionReceiptRegistry",
+        address: SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
+        protocolVersion: 1,
+      },
+      deployment: {
+        transactionHash: "0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e",
+        blockNumber: "45213264",
+        sourceCommit: "d5250f0e3621e483bf27a0edfc538e2f02178473",
+      },
+      runtimeBytecode: {
+        sizeBytes: 1913,
+        keccak256: "0xfbd38ff7e797a7c959d4d55b2eb6dd3987640e60bb97ffbb5b838b0021aeefae",
+      },
+      sourceVerification: {
+        completed: true,
+        status: "match",
+        runtimeMatch: "match",
+        creationMatch: null,
+      },
+    });
+    expect(submissionReceiptRegistryDeployment).toMatchObject({
+      manifestSchemaVersion: deploymentManifest.schemaVersion,
+      network: deploymentManifest.network,
+      contract: deploymentManifest.contract,
+      compilation: deploymentManifest.compilation,
+      deployment: deploymentManifest.deployment,
+      runtimeBytecode: deploymentManifest.runtimeBytecode,
+      sourceVerification: deploymentManifest.sourceVerification,
+    });
+  });
+
+  it("keeps the committed ABI byte-identical to the manifest fingerprint", () => {
+    const abi = readFileSync(`${packageDirectory}/src/abi/SubmissionReceiptRegistry.json`);
+    const digest = createHash("sha256").update(abi).digest("hex");
+
+    expect(digest).toBe(submissionReceiptRegistryDeployment.compilation.abiSha256);
+  });
+
+  it("does not expose the development-only receipt as application state", () => {
+    const publicApi = JSON.stringify(contractClient);
+
+    expect(publicApi).not.toContain(
+      "0xeecc8474e8dd954143ad2eff0435a59a70f2cb008bf778193b72a40be742b46b",
+    );
+    expect(publicApi).not.toContain(
+      "0xcd2a2ede94ebb7844e3465204cfe6a4d2722cb44c9eef9abb68aeaf3ff147dc1",
+    );
+    expect(publicApi).not.toContain(
+      "0x389b2f951a84414e9824cd6d13f9d8dedb06c978c88e2865b875551f06fb04cb",
+    );
+    expect(contractClient).not.toHaveProperty("developmentOnlyHealthCheck");
   });
 });

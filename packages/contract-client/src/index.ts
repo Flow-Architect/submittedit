@@ -2,8 +2,19 @@ import type { Abi, Address } from "viem";
 import { isAddress } from "viem";
 import { monadTestnet } from "viem/chains";
 import submissionReceiptRegistryAbiJson from "./abi/SubmissionReceiptRegistry.json" with { type: "json" };
+import {
+  SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
+  submissionReceiptRegistryDeployment,
+} from "./deployment.js";
 
 export { monadTestnet as submittedItChain } from "viem/chains";
+export {
+  SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
+  SUBMITTEDIT_MONAD_TESTNET_CHAIN_ID,
+  submissionReceiptRegistryDeployment,
+  type DeploymentExplorerLinks,
+  type SubmissionReceiptRegistryDeployment,
+} from "./deployment.js";
 
 export const SUBMISSION_RECEIPT_REGISTRY_PROTOCOL_VERSION = 1 as const;
 export const ZERO_BYTES32 = `0x${"0".repeat(64)}` as Bytes32Hex;
@@ -19,6 +30,11 @@ export const CONTRACT_RECEIPT_STAGES = {
 export const CONTRACT_EVENT_NAMES = ["ReceiptEventAnchored"] as const;
 
 export const submissionReceiptRegistryAbi = submissionReceiptRegistryAbiJson as Abi;
+export const submissionReceiptRegistryReadConfig = {
+  abi: submissionReceiptRegistryAbi,
+  address: SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
+  chainId: submissionReceiptRegistryDeployment.network.chainId,
+} as const;
 
 export type Bytes32Hex = `0x${string}`;
 export type ReceiptCoreEventStage = Exclude<keyof typeof CONTRACT_RECEIPT_STAGES, "NONE">;

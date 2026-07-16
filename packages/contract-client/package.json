@@ -13,6 +13,7 @@
   "scripts": {
     "abi:check": "node ../../contracts/scripts/export-abi.mjs --check",
     "build": "tsc --project tsconfig.build.json",
+    "deployment:check": "node scripts/sync-deployment.mjs --check",
     "test": "vitest run --config vitest.config.ts",
     "test:exports": "node test/export-smoke.mjs",
     "typecheck": "tsc --noEmit"

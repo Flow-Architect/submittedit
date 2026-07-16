@@ -19,6 +19,7 @@ Before proposing a change, run:
 ```bash
 pnpm check
 pnpm test:e2e
+pnpm contract:deployment:check
 export MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
 cd contracts
 forge fmt --check
@@ -33,7 +34,7 @@ Keep TypeScript strict. Do not suppress errors with `any`, weaken lifecycle lang
 
 Receipt-protocol changes must update or reproduce the reviewed vectors in `packages/receipt-core/test-vectors`, pass `pnpm --filter @submittedit/receipt-core test`, and preserve Node/real-Chromium parity. Do not update an expected hash until the canonical payload and domain-separated preimage have been inspected. Runtime code in `receipt-core` must remain free of Node-only APIs.
 
-Contract changes must preserve the fixed Goal 03 stage mapping and privacy boundary, exercise unit/fuzz/invariant coverage, and regenerate `packages/contract-client/src/abi/SubmissionReceiptRegistry.json` from compiler output with `pnpm contract:abi`. `MONAD_TESTNET_RPC_URL` must be set explicitly for every Foundry command; the public endpoint above is a non-secret example, not a hidden fallback. Never hand-edit the ABI, add a guessed address, or commit Foundry cache/broadcast output.
+Contract changes must preserve the fixed Goal 03 stage mapping and privacy boundary, exercise unit/fuzz/invariant coverage, and regenerate `packages/contract-client/src/abi/SubmissionReceiptRegistry.json` from compiler output with `pnpm contract:abi`. The reviewed Monad Testnet deployment lives in `deployments/monad-testnet.json`; regenerate its product-safe client projection with `pnpm contract:deployment` and never expose the manifest's development-only health-check receipt as normal application state. `MONAD_TESTNET_RPC_URL` must be set explicitly for every Foundry command; the public endpoint above is a non-secret example, not a hidden fallback. Never hand-edit generated deployment/ABI files, add a guessed address, or commit Foundry cache/broadcast output.
 
 The root check also confirms that the extension PNG icons match the canonical SVG mark. After an intentional mark change, run `pnpm icons:generate`, inspect every size, and commit the vector and generated icons together. Product-facing styles should consume `@submittedit/ui/tokens.css`; lifecycle copy must follow [the status-language decision](docs/DECISIONS/0002-status-language.md).
 

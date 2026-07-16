@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document covers the current receipt protocol and Goal 04 `SubmissionReceiptRegistry` boundary. It is not a professional security audit. The registry is compiled and tested but not deployed; browser capture, signing, encryption, relay, hosted storage, verifier behavior, and live-chain confirmation remain future implementation work.
+This document covers the current receipt protocol and the deployed `SubmissionReceiptRegistry` boundary. It is not a professional security audit. The registry is compiled, tested, deployed, source/runtime matched through MonadVision/Sourcify, and read-validated on Monad Testnet. Browser capture, signing, encryption, relay, hosted storage, product verifier behavior, and application confirmation policy remain future implementation work.
 
 The protected properties are:
 
@@ -64,4 +64,4 @@ Only a verified authoritative acknowledgment may support Accepted or Rejected. A
 
 ## Validation evidence and remaining review
 
-Goal 04 uses compiler warnings, Foundry lint, explicit event/error tests, 256-run fuzz cases, 32-run stateful invariant campaigns with 1,024 calls each, deterministic ABI comparisons, client compatibility tests, and manual source/storage review. No external analyzer was already installed, so Slither/Mythril results are not claimed. A future production deployment would warrant independent review beyond hackathon testing.
+Goals 04–05 use compiler warnings, Foundry lint, explicit event/error tests, 256-run fuzz cases, 32-run stateful invariant campaigns with 1,024 calls each, deterministic ABI and deployment-manifest comparisons, client compatibility tests, live runtime/state/log checks, and manual source/storage review. The development-only anchor proves structural contract operation only and is not product evidence. No external analyzer or independent security audit is claimed. A future production deployment would warrant independent review beyond hackathon testing.

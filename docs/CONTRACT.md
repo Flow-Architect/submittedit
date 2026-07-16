@@ -2,9 +2,23 @@
 
 ## Status and purpose
 
-`SubmissionReceiptRegistry` is SubmittedIt's protocol-version-1 integrity registry. It anchors linked event fingerprints and enforces lifecycle progression without receiving private receipt contents. It is compiled, tested, and prepared for reproducible source verification but **not deployed**; no address, transaction, or verification result is published yet.
+`SubmissionReceiptRegistry` is SubmittedIt's protocol-version-1 integrity registry. It anchors linked event fingerprints and enforces lifecycle progression without receiving private receipt contents. It is compiled, tested, deployed on Monad Testnet at `0x63914900a2D3571F92506821a76c4036C3e25883`, and source-verified through MonadVision/Sourcify.
 
 The registry proves only that fixed protocol values were included in an append-only Monad transaction history at a block timestamp. It does not inspect the evidence behind an event hash, verify a signature, identify a sender, or establish real-world acceptance, delivery, or legal timeliness.
+
+## Live deployment evidence
+
+- Network: Monad Testnet, chain ID `10143`
+- Contract: [`0x63914900a2D3571F92506821a76c4036C3e25883`](https://testnet.monadvision.com/address/0x63914900a2D3571F92506821a76c4036C3e25883)
+- Deployment transaction: [`0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e`](https://testnet.monadvision.com/tx/0xc366e3ca93cd5ae49ac0dd90d95621fa0dee76fefb5deb4ecbc47122a01ab38e)
+- Deployment block: `45213264`
+- Runtime: `1913` bytes; Keccak-256 `0xfbd38ff7e797a7c959d4d55b2eb6dd3987640e60bb97ffbb5b838b0021aeefae`
+- Protocol version: `1`
+- Source verification: [overall `match` and runtime `match`](https://sourcify-api-monad.blockvision.org/v2/verify/e136f18f-a9ba-4dac-879c-be0193376ec6), verified at `2026-07-15T23:11:20Z`
+
+The verification response reported `creationMatch: null`; separate creation-bytecode verification is not claimed. The reviewed details and official MonadVision/Monadscan links live in [`deployments/monad-testnet.json`](../deployments/monad-testnet.json).
+
+One synthetic Attempted event was anchored solely as a development-only health check. It is not a product receipt, user filing, authority acknowledgment, or judge-demo artifact and is excluded from the normal contract-client API. See [the deployment runbook](DEPLOYMENT.md) for its explicit warning and read-only verification commands.
 
 ## Lifecycle enum
 
@@ -141,11 +155,11 @@ This makes history independent of an admin but also means the contract cannot co
 
 ## Deployment script
 
-`contracts/script/DeploySubmissionReceiptRegistry.s.sol` checks `block.chainid == 10143` before entering Foundry's `startBroadcast()` scope. Its test changes the local chain ID and proves an unexpected value reverts before any deployment. The script contains no private key, seed phrase, account address, or environment secret; a future Goal 05 invocation must select a protected Foundry account/keystore through the CLI. Omitting `--broadcast` keeps Foundry script execution in simulation.
+`contracts/script/DeploySubmissionReceiptRegistry.s.sol` checks `block.chainid == 10143` before entering Foundry's `startBroadcast()` scope. Its test changes the local chain ID and proves an unexpected value reverts before any deployment. The script contains no private key, seed phrase, account address, or environment secret; credential selection remains outside source and uses Foundry's encrypted-account CLI boundary. Omitting `--broadcast` keeps Foundry script execution in simulation.
 
-Goal 05 preparation requires the RPC through `MONAD_TESTNET_RPC_URL`, pins EVM version `osaka`, and compiles with literal source metadata and no IPFS bytecode hash. MonadVision through its official Sourcify endpoint is the primary future verification route; Monadscan/Etherscan is optional. See [the deployment runbook](DEPLOYMENT.md) for exact commands and stop conditions.
+The build requires RPC configuration through `MONAD_TESTNET_RPC_URL`, pins EVM version `osaka`, and compiles with literal source metadata and no IPFS bytecode hash. MonadVision/Sourcify verified the deployed source/runtime match; Monadscan supplies a second public explorer view. See [the deployment runbook](DEPLOYMENT.md) for exact reproducible build and live-read commands.
 
-Neither Goal 04 nor this preparation checkpoint ran a broadcast, created or funded a wallet, verified source, or wrote deployment metadata.
+The dedicated deployer and any future application relayer are separate responsibilities. The deployer has no privileged contract role: the immutable registry has no owner or relayer allowlist.
 
 ## Reproducible ABI
 
@@ -160,7 +174,7 @@ pnpm contract:abi
 pnpm contract:abi:check
 ```
 
-The check compares exact bytes, so a source/ABI mismatch fails locally and in the contract CI job. `contract-client` exposes the ABI, fixed enum map, and a strict Goal 03 projection helper. That helper accepts exactly `schemaVersion`, `chainId`, `contractAddress`, `receiptId`, `stage`, `previousEventHash`, and `eventHash`; rejects extra fields; and explicitly carries every projection field into request arguments or request metadata. It adds required key fingerprints without inventing a deployment address, signer, RPC write, or success response.
+The check compares exact bytes, so a source/ABI mismatch fails locally and in the contract CI job. `contract-client` exposes the ABI, verified chain/address/read configuration, deployment metadata generated from the manifest, fixed enum map, and a strict Goal 03 projection helper. That helper accepts exactly `schemaVersion`, `chainId`, `contractAddress`, `receiptId`, `stage`, `previousEventHash`, and `eventHash`; rejects extra fields; and explicitly carries every projection field into request arguments or request metadata. It adds required key fingerprints without adding a signer, RPC write, or success response.
 
 ### Verification-metadata artifact delta
 
@@ -173,7 +187,7 @@ Changing from the default IPFS metadata hash to the official verification-ready 
 | Runtime size        |                                                          1,954 bytes |                                                          1,913 bytes |
 | Runtime Keccak-256  | `0x8dbdd82bd54c3b6235b134298a7ae22f02ad44d0462011b88d0acd5f07361e8a` | `0xfbd38ff7e797a7c959d4d55b2eb6dd3987640e60bb97ffbb5b838b0021aeefae` |
 
-Both bytecode forms use Solidity `0.8.30`, optimizer runs `200`, and EVM version `osaka`; only compiler metadata settings changed. The exact exported ABI remains unchanged at SHA-256 `e3620a954c3e3426a244cac025af41afd2bbfb116eecafb7dad6e186cdb50165`. These are local compiler-artifact fingerprints, not deployed-code or verification claims.
+Both bytecode forms use Solidity `0.8.30`, optimizer runs `200`, and EVM version `osaka`; only compiler metadata settings changed. The exact exported ABI remains unchanged at SHA-256 `e3620a954c3e3426a244cac025af41afd2bbfb116eecafb7dad6e186cdb50165`. The verification-ready runtime fingerprint matches the live deployed code. The creation fingerprint remains a reproducible local compiler artifact and is not described as separately verified because `creationMatch` was null.
 
 ## Gas snapshot
 
@@ -191,7 +205,8 @@ Prerequisite state for linked cases is created in each test's `setUp` and exclud
 
 ## Explicit limitations
 
-- No contract is deployed yet.
+- The published address is a Monad Testnet deployment, not Mainnet or a production-readiness claim.
+- Source/runtime matching is not an external security audit.
 - The registry does not verify event contents, extension signatures, or authority signatures.
 - A transaction sender is not an authenticated user or authority.
 - A stored authority stage is not sufficient for the UI to display Accepted or Rejected.
