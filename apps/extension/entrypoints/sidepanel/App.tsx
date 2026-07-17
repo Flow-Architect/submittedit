@@ -7,6 +7,7 @@ import {
   parseCaptureActivityEvent,
   type RuntimeRequest,
 } from "../../lib/messages";
+import { randomOpaqueId } from "../../lib/capture";
 import {
   initialPanelState,
   type ReachablePanelState,
@@ -14,6 +15,11 @@ import {
   stateFromProbe,
   stateFromSnapshot,
 } from "../../lib/panel-state";
+import {
+  isDeletionOnlyRedaction,
+  SITE_CONFIRMATION_EVIDENCE_TYPES,
+  type SiteConfirmationEvidenceType,
+} from "../../lib/site-confirmation";
 import {
   EXTENSION_STORAGE_KEY,
   REMINDER_INTERVALS,
@@ -31,6 +37,14 @@ interface SettingsDraft {
   reminderInterval: ReminderInterval;
   retentionPreference: RetentionPreference;
   demoMode: boolean;
+}
+
+interface ConfirmationDraft {
+  confirmOriginChange: boolean;
+  evidenceType: SiteConfirmationEvidenceType;
+  message: string;
+  reference: string;
+  saveId: string;
 }
 
 function errorState(error: ExtensionError, snapshot: PanelSnapshot | null): ReachablePanelState {
@@ -148,16 +162,24 @@ function SiteActions({
 }
 
 function ReceiptSummary({ receipt }: { receipt: LocalReceiptSummary }) {
+  const siteConfirmed = receipt.status === "SITE_CONFIRMED";
   return (
     <li className="receipt-summary">
       <div className="receipt-summary-heading">
         <strong>
-          <span aria-hidden="true">→</span> Attempted
+          <span aria-hidden="true">{siteConfirmed ? "◆" : "→"}</span>{" "}
+          {siteConfirmed ? "Site confirmed" : "Attempted"}
         </strong>
-        <time dateTime={receipt.capturedAt}>{formattedTime(receipt.capturedAt)}</time>
+        <time dateTime={receipt.siteConfirmedAt ?? receipt.capturedAt}>
+          {formattedTime(receipt.siteConfirmedAt ?? receipt.capturedAt)}
+        </time>
       </div>
       <code title={receipt.receiptId}>{shortReceiptId(receipt.receiptId)}</code>
-      <span>{receipt.origin}</span>
+      <span>{receipt.siteConfirmationOrigin ?? receipt.origin}</span>
+      {receipt.siteConfirmationSnippet ? (
+        <q className="receipt-snippet">{receipt.siteConfirmationSnippet}</q>
+      ) : null}
+      <small>Pending acceptance</small>
     </li>
   );
 }
@@ -171,7 +193,7 @@ function ReceiptHistory({ snapshot }: { snapshot: PanelSnapshot | null }) {
       <div className="section-heading">
         <div>
           <span className="eyebrow">Local evidence</span>
-          <h2 id="recent-receipts-heading">Recent attempts</h2>
+          <h2 id="recent-receipts-heading">Recent receipts</h2>
         </div>
         <strong className="count-badge">{snapshot.receiptIndexCount}</strong>
       </div>
@@ -181,8 +203,8 @@ function ReceiptHistory({ snapshot }: { snapshot: PanelSnapshot | null }) {
         ))}
       </ul>
       <p className="fine-print">
-        These records remain only in this Chrome profile. They are not signed, encrypted, uploaded,
-        or anchored onchain in this milestone.
+        Attempt and user-approved website evidence remain only in this Chrome profile. They are not
+        signed, encrypted, uploaded, or anchored onchain in this milestone.
       </p>
     </section>
   );
@@ -194,6 +216,8 @@ export function App() {
   const [settingsDraft, setSettingsDraft] = useState<SettingsDraft | null>(null);
   const [settingsNotice, setSettingsNotice] = useState("");
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmationDraft, setConfirmationDraft] = useState<ConfirmationDraft | null>(null);
+  const [confirmationNotice, setConfirmationNotice] = useState("");
   const refreshEpoch = useRef(0);
 
   const runProbe = useCallback(async (snapshot: PanelSnapshot) => {
@@ -266,11 +290,15 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    const reviewInProgress =
+      panelState.kind === "selecting-confirmation" || panelState.kind === "confirmation-review";
     const handleTabActivated = () => {
-      void refresh();
+      if (!reviewInProgress) {
+        void refresh();
+      }
     };
     const handleTabUpdated = (_tabId: number, changeInfo: { status?: string }) => {
-      if (changeInfo.status === "complete") {
+      if (changeInfo.status === "complete" && !reviewInProgress) {
         void refresh();
       }
     };
@@ -278,7 +306,7 @@ export function App() {
       void refresh();
     };
     const handleStorageChange = (changes: Record<string, unknown>, areaName: string) => {
-      if (areaName === "local" && EXTENSION_STORAGE_KEY in changes) {
+      if (areaName === "local" && EXTENSION_STORAGE_KEY in changes && !reviewInProgress) {
         void refresh(false);
       }
     };
@@ -484,6 +512,127 @@ export function App() {
     await applySnapshot(response.snapshot, false);
   };
 
+  const beginConfirmationReview = async () => {
+    if (panelState.kind !== "confirmation-available") {
+      return;
+    }
+    const { opportunity, receipt, snapshot } = panelState;
+    setConfirmationNotice("");
+    setPanelState({ kind: "selecting-confirmation", opportunity, receipt, snapshot });
+    const response = await sendRequest({
+      type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+      receiptId: receipt.receiptId,
+    });
+    if (!response.ok) {
+      setPanelState({ kind: "confirmation-error", snapshot, error: response.error, receipt });
+      return;
+    }
+    if (!response.confirmationReview) {
+      setPanelState({
+        kind: "confirmation-error",
+        snapshot: response.snapshot,
+        receipt,
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "SubmittedIt received an incomplete evidence-review response.",
+          recoverable: true,
+        },
+      });
+      return;
+    }
+    setConfirmationDraft({
+      confirmOriginChange: false,
+      evidenceType: response.confirmationReview.originChanged ? "REDIRECT" : "CONFIRMATION_PAGE",
+      message: response.confirmationReview.selectedText,
+      reference: "",
+      saveId: randomOpaqueId(),
+    });
+    setPanelState({
+      kind: "confirmation-review",
+      snapshot: response.snapshot,
+      review: response.confirmationReview,
+    });
+  };
+
+  const cancelConfirmationReview = async () => {
+    if (panelState.kind !== "confirmation-review") {
+      return;
+    }
+    const { review, snapshot } = panelState;
+    setConfirmationDraft(null);
+    setConfirmationNotice("");
+    setPanelState(stateFromSnapshot(snapshot));
+    const response = await sendRequest({
+      type: "CANCEL_SITE_CONFIRMATION_REVIEW",
+      receiptId: review.receiptId,
+      reviewId: review.reviewId,
+    });
+    if (!response.ok) {
+      setPanelState({ kind: "confirmation-error", snapshot, error: response.error, receipt: null });
+      return;
+    }
+    setPanelState(stateFromSnapshot(response.snapshot));
+  };
+
+  const saveConfirmation = async (event: FormEvent) => {
+    event.preventDefault();
+    if (panelState.kind !== "confirmation-review" || !confirmationDraft) {
+      return;
+    }
+    const { review, snapshot } = panelState;
+    if (!isDeletionOnlyRedaction(review.selectedText, confirmationDraft.message)) {
+      setConfirmationNotice(
+        "Redaction can remove selected characters, but it cannot add text that was not selected.",
+      );
+      return;
+    }
+    setConfirmationNotice("Saving reviewed website evidence locally…");
+    const response = await sendRequest({
+      type: "SAVE_SITE_CONFIRMATION",
+      confirmOriginChange: confirmationDraft.confirmOriginChange,
+      evidenceType: confirmationDraft.evidenceType,
+      message: confirmationDraft.message,
+      receiptId: review.receiptId,
+      ...(confirmationDraft.reference.length > 0 ? { reference: confirmationDraft.reference } : {}),
+      reviewId: review.reviewId,
+      saveId: confirmationDraft.saveId,
+    });
+    if (!response.ok) {
+      const receipt = snapshot.recentReceipts.find(
+        (candidate) => candidate.receiptId === review.receiptId,
+      );
+      setPanelState({
+        kind: "confirmation-error",
+        snapshot,
+        error: response.error,
+        receipt: receipt ?? null,
+      });
+      setConfirmationNotice("");
+      return;
+    }
+    if (!response.confirmation) {
+      setPanelState({
+        kind: "confirmation-error",
+        snapshot: response.snapshot,
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "SubmittedIt received an incomplete confirmation-save response.",
+          recoverable: true,
+        },
+        receipt: null,
+      });
+      setConfirmationNotice("");
+      return;
+    }
+    setConfirmationDraft(null);
+    setConfirmationNotice("");
+    setPanelState({
+      kind: "site-confirmed",
+      snapshot: response.snapshot,
+      receipt: response.confirmation.receipt,
+    });
+  };
+
   const renderSiteState = () => {
     switch (panelState.kind) {
       case "loading":
@@ -501,8 +650,8 @@ export function App() {
             <h1>Know what the browser can prove.</h1>
             <p>
               After you grant access to one exact site, SubmittedIt can record a standard form
-              attempt locally. Passwords, protected tokens, autofill secrets, and file contents are
-              excluded.
+              attempt locally and let you deliberately review visible website-confirmation text.
+              Passwords, protected tokens, autofill secrets, and file contents are excluded.
             </p>
             <button className="button button-primary" onClick={dismissWelcome}>
               Continue
@@ -627,7 +776,8 @@ export function App() {
             <code className="receipt-id">{shortReceiptId(panelState.receiptId)}</code>
           </section>
         );
-      case "attempted":
+      case "attempted": {
+        const opportunity = panelState.snapshot.confirmationOpportunity;
         return (
           <section className="evidence-card attempted-card" aria-live="assertive">
             <StateBadge symbol="→" tone="attention">
@@ -661,6 +811,25 @@ export function App() {
               <strong>Still missing</strong>
               <span>Site processing evidence and an authoritative acknowledgment.</span>
             </div>
+            {opportunity?.receipt.receiptId === panelState.receipt.receiptId &&
+            opportunity.kind === "AWAITING_NAVIGATION" ? (
+              <div className="capture-boundary" role="note">
+                <strong>Waiting for a later page change</strong>
+                <span>
+                  Navigation alone will not create site evidence. After the site changes, select a
+                  visible message and review it deliberately.
+                </span>
+              </div>
+            ) : opportunity?.receipt.receiptId === panelState.receipt.receiptId &&
+              opportunity.kind === "EXPIRED" ? (
+              <div className="capture-warning" role="note">
+                <strong>Confirmation capture window expired</strong>
+                <span>
+                  This receipt remains Attempted. A stale page cannot be attached after the active
+                  navigation window closes.
+                </span>
+              </div>
+            ) : null}
             {panelState.probe?.hasForm ? (
               <p className="fine-print">
                 A standard form is also ready on this page. A later intentional submission will
@@ -672,6 +841,333 @@ export function App() {
               onRevoke={() => void revokeCurrentSite()}
               busy={false}
             />
+          </section>
+        );
+      }
+      case "confirmation-available":
+        return (
+          <section className="evidence-card confirmation-card" aria-live="polite">
+            <StateBadge symbol="◆" tone="attention">
+              Relevant navigation detected
+            </StateBadge>
+            <h1>Review what the website displayed</h1>
+            <p>
+              SubmittedIt detected a later page or document change in the same bound tab. That
+              change alone is not confirmation.
+            </p>
+            <dl className="receipt-details">
+              <div>
+                <dt>Originating receipt</dt>
+                <dd>
+                  <code title={panelState.receipt.receiptId}>
+                    {shortReceiptId(panelState.receipt.receiptId)}
+                  </code>
+                </dd>
+              </div>
+              <div>
+                <dt>Current site</dt>
+                <dd>{panelState.opportunity.currentOrigin}</dd>
+              </div>
+              <div>
+                <dt>Navigation sequence</dt>
+                <dd>{panelState.opportunity.navigationSequence}</dd>
+              </div>
+            </dl>
+            {panelState.opportunity.originChanged ? (
+              <div className="capture-warning" role="alert">
+                <strong>Origin changed during the bound navigation</strong>
+                <span>
+                  Original: {panelState.opportunity.originalOrigin}
+                  <br />
+                  Current: {panelState.opportunity.currentOrigin}
+                  <br />
+                  You must confirm this relationship again during review.
+                </span>
+              </div>
+            ) : null}
+            <div className="capture-boundary" role="note">
+              <strong>Select visible confirmation text first</strong>
+              <span>
+                Highlight only the message you can see on the page. SubmittedIt will read that
+                selection only after you choose the action below.
+              </span>
+            </div>
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={() => void beginConfirmationReview()}
+            >
+              Capture confirmation evidence
+            </button>
+            <p className="fine-print">
+              No event is created until you review, redact, and save the evidence.
+            </p>
+          </section>
+        );
+      case "confirmation-origin-warning":
+        return (
+          <section className="evidence-card" aria-live="assertive">
+            <StateBadge symbol="!" tone="attention">
+              {panelState.opportunity.originChanged ? "Origin changed" : "Site access removed"}
+            </StateBadge>
+            <h1>
+              {panelState.opportunity.originChanged
+                ? "Review the redirected site before granting access"
+                : "Restore site access before reviewing evidence"}
+            </h1>
+            <dl className="receipt-details origin-change-details">
+              <div>
+                <dt>{panelState.opportunity.originChanged ? "Original origin" : "Bound origin"}</dt>
+                <dd>{panelState.opportunity.originalOrigin}</dd>
+              </div>
+              <div>
+                <dt>{panelState.opportunity.originChanged ? "New origin" : "Current origin"}</dt>
+                <dd>{panelState.opportunity.currentOrigin}</dd>
+              </div>
+            </dl>
+            <p>
+              {panelState.opportunity.originChanged
+                ? "The same tab and navigation sequence remain tied to this attempt, but SubmittedIt will not inspect the new origin without a separate Chrome permission grant."
+                : "The bound attempt remains local, but SubmittedIt will not inspect or save evidence while Chrome access is removed."}
+            </p>
+            <button className="button button-primary" type="button" onClick={enableCurrentSite}>
+              {panelState.opportunity.originChanged
+                ? "Review access for the new origin"
+                : "Review access for this origin"}
+            </button>
+            <p className="fine-print">
+              Granting access does not save confirmation evidence. You must still select, review,
+              and explicitly approve visible text.
+            </p>
+          </section>
+        );
+      case "selecting-confirmation":
+        return (
+          <section className="evidence-card" aria-live="polite">
+            <StateBadge symbol="…" tone="attention">
+              Reading selected evidence
+            </StateBadge>
+            <h1>Checking the visible selection</h1>
+            <p>
+              SubmittedIt is reading only the text you selected, the visible tab title, and the
+              privacy-safe current URL.
+            </p>
+          </section>
+        );
+      case "confirmation-review":
+        return (
+          <section className="evidence-card confirmation-review" aria-live="polite">
+            <StateBadge symbol="◆" tone="attention">
+              Evidence review
+            </StateBadge>
+            <h1>Review website confirmation</h1>
+            <p>Remove anything unnecessary before creating the linked local event.</p>
+            <dl className="receipt-details">
+              <div>
+                <dt>Originating receipt</dt>
+                <dd>
+                  <code title={panelState.review.receiptId}>
+                    {shortReceiptId(panelState.review.receiptId)}
+                  </code>
+                </dd>
+              </div>
+              <div>
+                <dt>Current site</dt>
+                <dd>{panelState.review.currentOrigin}</dd>
+              </div>
+              <div>
+                <dt>Page title</dt>
+                <dd>{panelState.review.pageTitle || "Untitled page"}</dd>
+              </div>
+              <div>
+                <dt>Page URL</dt>
+                <dd className="review-url">{panelState.review.pageUrl}</dd>
+              </div>
+            </dl>
+            <form className="confirmation-form" onSubmit={saveConfirmation}>
+              <label>
+                Evidence type
+                <select
+                  value={confirmationDraft?.evidenceType ?? "CONFIRMATION_PAGE"}
+                  onChange={(event) =>
+                    setConfirmationDraft((draft) =>
+                      draft
+                        ? {
+                            ...draft,
+                            evidenceType: event.target.value as SiteConfirmationEvidenceType,
+                          }
+                        : draft,
+                    )
+                  }
+                >
+                  {SITE_CONFIRMATION_EVIDENCE_TYPES.map((type) => (
+                    <option key={type} value={type}>
+                      {type === "CONFIRMATION_PAGE"
+                        ? "Confirmation page"
+                        : type === "INLINE_MESSAGE"
+                          ? "Inline message"
+                          : "Redirect"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Confirmation text — redact by removing characters
+                <textarea
+                  rows={6}
+                  value={confirmationDraft?.message ?? ""}
+                  onChange={(event) =>
+                    setConfirmationDraft((draft) =>
+                      draft ? { ...draft, message: event.target.value } : draft,
+                    )
+                  }
+                />
+                <span>
+                  You may delete lines or sensitive values. Added or rewritten text is rejected.
+                </span>
+              </label>
+              <label>
+                Optional visible reference
+                <input
+                  maxLength={256}
+                  value={confirmationDraft?.reference ?? ""}
+                  onChange={(event) =>
+                    setConfirmationDraft((draft) =>
+                      draft ? { ...draft, reference: event.target.value } : draft,
+                    )
+                  }
+                />
+                <span>The reference must appear in the selected visible text.</span>
+              </label>
+              {panelState.review.originChanged ? (
+                <label className="origin-confirmation">
+                  <input
+                    type="checkbox"
+                    checked={confirmationDraft?.confirmOriginChange ?? false}
+                    onChange={(event) =>
+                      setConfirmationDraft((draft) =>
+                        draft ? { ...draft, confirmOriginChange: event.target.checked } : draft,
+                      )
+                    }
+                  />
+                  <span>
+                    I confirm this navigation from {panelState.review.originalOrigin} to{" "}
+                    {panelState.review.currentOrigin} belongs to the originating submission.
+                  </span>
+                </label>
+              ) : null}
+              <div className="review-result" role="note">
+                <strong>Resulting status</strong>
+                <span>Pending acceptance — website confirmation is not authority acceptance.</span>
+              </div>
+              <p className="form-notice" role="status">
+                {confirmationNotice}
+              </p>
+              <div className="confirm-actions">
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={
+                    panelState.review.originChanged &&
+                    !(confirmationDraft?.confirmOriginChange ?? false)
+                  }
+                >
+                  Save website confirmation
+                </button>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={() => void cancelConfirmationReview()}
+                >
+                  Cancel without saving
+                </button>
+              </div>
+            </form>
+          </section>
+        );
+      case "site-confirmed":
+        return (
+          <section className="evidence-card site-confirmed-card" aria-live="assertive">
+            <StateBadge symbol="◆" tone="attention">
+              Site confirmed
+            </StateBadge>
+            <h1>Website confirmation captured</h1>
+            <p className="attempt-callout">Official acceptance still pending</p>
+            <dl className="receipt-details">
+              <div>
+                <dt>Receipt</dt>
+                <dd>
+                  <code title={panelState.receipt.receiptId}>
+                    {shortReceiptId(panelState.receipt.receiptId)}
+                  </code>
+                </dd>
+              </div>
+              <div>
+                <dt>Attempted</dt>
+                <dd>
+                  <time dateTime={panelState.receipt.capturedAt}>
+                    {formattedTime(panelState.receipt.capturedAt)}
+                  </time>
+                </dd>
+              </div>
+              <div>
+                <dt>Site confirmation</dt>
+                <dd>
+                  {panelState.receipt.siteConfirmedAt ? (
+                    <time dateTime={panelState.receipt.siteConfirmedAt}>
+                      {formattedTime(panelState.receipt.siteConfirmedAt)}
+                    </time>
+                  ) : (
+                    "Unavailable"
+                  )}
+                </dd>
+              </div>
+              <div>
+                <dt>Page origin</dt>
+                <dd>{panelState.receipt.siteConfirmationOrigin}</dd>
+              </div>
+            </dl>
+            {panelState.receipt.siteConfirmationSnippet ? (
+              <blockquote className="evidence-snippet">
+                {panelState.receipt.siteConfirmationSnippet}
+              </blockquote>
+            ) : null}
+            <div className="pending-warning" role="note">
+              <strong>Pending acceptance</strong>
+              <span>A verified authoritative acknowledgment is still missing.</span>
+            </div>
+            <p className="fine-print">
+              This linked event is local, unsigned, and unencrypted. It was not uploaded or sent to
+              Monad.
+            </p>
+            <SiteActions
+              onCheck={() => void refresh()}
+              onRevoke={() => void revokeCurrentSite()}
+              busy={false}
+            />
+          </section>
+        );
+      case "confirmation-error":
+        return (
+          <section className="evidence-card" aria-live="assertive">
+            <StateBadge symbol="!" tone="attention">
+              Confirmation capture needs attention
+            </StateBadge>
+            <h1>Website evidence was not saved</h1>
+            <p>{panelState.error.message}</p>
+            <p className="fine-print">
+              The Attempted receipt remains unchanged and Pending acceptance. Select the intended
+              visible message in the bound tab before retrying.
+            </p>
+            {panelState.error.recoverable ? (
+              <button
+                className="button button-primary"
+                type="button"
+                onClick={() => void refresh()}
+              >
+                Return to receipt
+              </button>
+            ) : null}
           </section>
         );
       case "capture-error":
@@ -767,10 +1263,10 @@ export function App() {
           {renderSiteState()}
           <ReceiptHistory snapshot={currentSnapshot} />
           <aside className="privacy-note" aria-label="Privacy boundary">
-            <strong>Local-only Attempted evidence.</strong>
+            <strong>Local-only browser evidence.</strong>
             <span>
-              No telemetry, portal API call, extension signature, encryption, authority outcome, or
-              blockchain transaction occurs in this capture flow.
+              Attempt and user-approved website evidence are not encrypted yet. No telemetry, portal
+              API call, signature, authority outcome, or blockchain transaction occurs in this flow.
             </span>
           </aside>
         </>
@@ -779,7 +1275,7 @@ export function App() {
           <div>
             <span className="eyebrow">Local preferences</span>
             <h1>Settings</h1>
-            <p>These choices and Attempted receipts stay in this Chrome profile.</p>
+            <p>These choices and local browser-evidence receipts stay in this Chrome profile.</p>
           </div>
 
           <form className="settings-form" onSubmit={saveSettings}>
@@ -861,7 +1357,7 @@ export function App() {
             <div className="section-heading">
               <div>
                 <h2>Local receipt index</h2>
-                <p>Canonical Attempted events stored in this Chrome profile.</p>
+                <p>Canonical Attempted and optional linked SiteConfirmed events in this profile.</p>
               </div>
               <strong className="count-badge">{snapshotForSettings?.receiptIndexCount ?? 0}</strong>
             </div>
@@ -901,8 +1397,8 @@ export function App() {
           <section className="settings-section danger-zone">
             <h2>Delete all local data</h2>
             <p>
-              Clears SubmittedIt settings, Attempted receipts, enabled-site metadata, and
-              revoked-site history. Granted site access is removed.
+              Clears SubmittedIt settings, Attempted and SiteConfirmed evidence, enabled-site
+              metadata, and revoked-site history. Granted site access is removed.
             </p>
             {!confirmDelete ? (
               <button

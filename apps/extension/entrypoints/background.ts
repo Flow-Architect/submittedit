@@ -6,10 +6,12 @@ import {
   CAPTURE_CONTENT_SCRIPT_ID,
   CAPTURE_CONTENT_SCRIPT_PATH,
   privacySafePageUrl,
+  randomOpaqueId,
   type CaptureAttemptRequest,
   type CapturePageErrorRequest,
 } from "../lib/capture";
 import {
+  type ConfirmationOpportunity,
   type BackgroundResponse,
   type CaptureActivityEvent,
   type ExtensionErrorCode,
@@ -26,8 +28,27 @@ import {
   parseCapturePageStatus,
 } from "../lib/probe";
 import {
+  canonicalSaveSiteConfirmationInput,
+  confirmationCandidateCommand,
+  confirmationContextCommand,
+  createSiteConfirmationEvent,
+  parsePageContextCandidate,
+  parsePageEvidenceCandidate,
+  SITE_CONFIRMATION_REVIEW_WINDOW_MS,
+  siteConfirmationSnippet,
+  type PageContextObservationRequest,
+  type PageEvidenceCandidate,
+  type SiteConfirmationReview,
+} from "../lib/site-confirmation";
+import {
+  activeReceiptForTab,
   addRevokedSite,
   appendAttemptReceipt,
+  appendSiteConfirmation,
+  confirmationContextIsExpired,
+  expireConfirmationContext,
+  receiptById,
+  recordNavigationObservation,
   type ExtensionLocalState,
   recentReceiptSummaries,
   summarizeAttemptReceipt,
@@ -62,7 +83,16 @@ const localStorageArea: LocalStorageArea = {
   },
 };
 
-let captureWriteQueue: Promise<void> = Promise.resolve();
+let storageWriteQueue: Promise<void> = Promise.resolve();
+
+interface ConfirmationReviewSession {
+  readonly candidate: PageEvidenceCandidate;
+  readonly review: SiteConfirmationReview;
+  readonly tabId: number;
+}
+
+const confirmationReviewSessions = new Map<string, ConfirmationReviewSession>();
+const MAX_CONFIRMATION_REVIEW_SESSIONS = 20;
 
 function now(): string {
   return new Date().toISOString();
@@ -92,9 +122,9 @@ async function saveState(state: ExtensionLocalState): Promise<ExtensionLocalStat
   }
 }
 
-function queueCaptureWrite<T>(operation: () => Promise<T>): Promise<T> {
-  const queued = captureWriteQueue.then(operation, operation);
-  captureWriteQueue = queued.then(
+function queueStorageWrite<T>(operation: () => Promise<T>): Promise<T> {
+  const queued = storageWriteQueue.then(operation, operation);
+  storageWriteQueue = queued.then(
     () => undefined,
     () => undefined,
   );
@@ -267,6 +297,23 @@ async function reconcileCurrentSite(
 
   const tabUrl = typeof tab.url === "string" ? tab.url : tab.pendingUrl;
   if (typeof tabUrl !== "string") {
+    const boundReceipt = activeReceiptForTab(initialState, tab.id);
+    const boundContext = boundReceipt?.confirmationContext;
+    const boundOrigin = boundContext ? inspectNormalizedOrigin(boundContext.currentOrigin) : null;
+    if (boundContext && boundOrigin?.ok && boundContext.sequence > 0) {
+      return {
+        state: initialState,
+        site: {
+          kind: "supported",
+          tabId: tab.id,
+          origin: boundOrigin.origin,
+          pageUrl: boundContext.currentPageUrl,
+          permissionPattern: boundOrigin.permissionPattern,
+          permissionGranted: false,
+          enabledAt: null,
+        },
+      };
+    }
     return {
       state: initialState,
       site: unavailableSite(
@@ -326,6 +373,7 @@ async function reconcileCurrentSite(
       kind: "supported",
       tabId: tab.id,
       origin: inspected.origin,
+      pageUrl: privacySafePageUrl(tabUrl),
       permissionPattern: inspected.permissionPattern,
       permissionGranted,
       enabledAt: state.enabledOrigins[inspected.origin]?.enabledAt ?? null,
@@ -333,15 +381,86 @@ async function reconcileCurrentSite(
   };
 }
 
+async function reconcileConfirmationContextForSite(
+  initialState: ExtensionLocalState,
+  site: SiteContext,
+): Promise<ExtensionLocalState> {
+  if (site.kind !== "supported") {
+    return initialState;
+  }
+  const active = activeReceiptForTab(initialState, site.tabId);
+  const context = active?.confirmationContext;
+  if (!active || !context) {
+    return initialState;
+  }
+  const timestamp = now();
+  if (confirmationContextIsExpired(context, timestamp)) {
+    return saveState(expireConfirmationContext(initialState, active.receiptId));
+  }
+  if (context.currentPageUrl === site.pageUrl) {
+    return initialState;
+  }
+  const observed = recordNavigationObservation(initialState, site.tabId, {
+    documentInstanceId: context.documentInstanceId,
+    kind: "PANEL_RECONCILE",
+    observationId: randomOpaqueId(),
+    observedAt: timestamp,
+    origin: site.origin,
+    pageUrl: site.pageUrl,
+  });
+  return observed.deduplicated ? initialState : saveState(observed.state);
+}
+
+function deriveConfirmationOpportunity(
+  state: ExtensionLocalState,
+  site: SiteContext,
+): ConfirmationOpportunity | null {
+  if (site.kind !== "supported") {
+    return null;
+  }
+  const receipt = state.receiptIndex.find(
+    (candidate) =>
+      candidate.currentStage === "ATTEMPTED" &&
+      candidate.confirmationContext?.tabId === site.tabId &&
+      (candidate.confirmationContext.status === "ACTIVE" ||
+        candidate.confirmationContext.status === "EXPIRED"),
+  );
+  const context = receipt?.confirmationContext;
+  if (!receipt || !context) {
+    return null;
+  }
+  const kind =
+    context.status === "EXPIRED"
+      ? "EXPIRED"
+      : context.sequence === 0
+        ? "AWAITING_NAVIGATION"
+        : !site.permissionGranted
+          ? "PERMISSION_REQUIRED"
+          : "READY";
+  return {
+    kind,
+    receipt: summarizeAttemptReceipt(receipt),
+    currentOrigin: context.currentOrigin,
+    expiresAt: context.expiresAt,
+    navigationSequence: context.sequence,
+    originChanged: context.currentOrigin !== context.originalOrigin,
+    originalOrigin: context.originalOrigin,
+    pageUrl: context.currentPageUrl,
+  };
+}
+
 async function buildSnapshot(suppliedState?: ExtensionLocalState): Promise<PanelSnapshot> {
   const loaded = suppliedState ?? (await loadState());
-  const { state, site } = await reconcileCurrentSite(loaded);
+  const reconciled = await reconcileCurrentSite(loaded);
+  const state = await reconcileConfirmationContextForSite(reconciled.state, reconciled.site);
+  const site = reconciled.site;
   return {
     welcomeRequired: !state.hasSeenWelcome,
     site,
     settings: state.settings,
     receiptIndexCount: state.receiptIndex.length,
     recentReceipts: recentReceiptSummaries(state),
+    confirmationOpportunity: deriveConfirmationOpportunity(state, site),
   };
 }
 
@@ -522,9 +641,9 @@ async function broadcastCaptureActivity(event: CaptureActivityEvent): Promise<vo
 async function authorizeCaptureSender(
   request: CaptureAttemptRequest | CapturePageErrorRequest,
   sender: Browser.runtime.MessageSender,
-): Promise<void> {
+): Promise<number> {
   const senderUrl = sender.url;
-  if (typeof sender.tab?.id !== "number" || typeof senderUrl !== "string") {
+  if (typeof sender.tab?.id !== "number" || sender.frameId !== 0 || typeof senderUrl !== "string") {
     throw new RuntimeFailure(
       "CAPTURE_REJECTED",
       "SubmittedIt rejected a capture request outside an enabled page.",
@@ -557,13 +676,14 @@ async function authorizeCaptureSender(
       true,
     );
   }
+  return sender.tab.id;
 }
 
 async function handleCaptureAttempt(
   request: CaptureAttemptRequest,
   sender: Browser.runtime.MessageSender,
 ): Promise<BackgroundResponse> {
-  await authorizeCaptureSender(request, sender);
+  const tabId = await authorizeCaptureSender(request, sender);
   await broadcastCaptureActivity({
     type: "CAPTURE_ACTIVITY",
     phase: "CAPTURING",
@@ -573,9 +693,9 @@ async function handleCaptureAttempt(
   });
 
   try {
-    const result = await queueCaptureWrite(async () => {
+    const result = await queueStorageWrite(async () => {
       const state = await loadState();
-      const receipt = createStoredAttemptReceipt(request);
+      const receipt = createStoredAttemptReceipt(request, tabId);
       const appended = appendAttemptReceipt(state, receipt);
       const saved = appended.deduplicated ? state : await saveState(appended.state);
       return {
@@ -648,6 +768,432 @@ async function handleCapturePageError(
   throw failure;
 }
 
+async function authorizeObservationSender(
+  request: PageContextObservationRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<number> {
+  const senderUrl = sender.url;
+  if (typeof sender.tab?.id !== "number" || sender.frameId !== 0 || typeof senderUrl !== "string") {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "SubmittedIt rejected an observation outside an enabled top-level page.",
+      false,
+    );
+  }
+  const inspected = inspectOrigin(senderUrl);
+  if (!inspected.ok || inspected.origin !== request.origin) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "SubmittedIt rejected a mismatched page-context observation.",
+      false,
+    );
+  }
+  const currentTab = await browser.tabs.get(sender.tab.id);
+  if (
+    typeof currentTab.url !== "string" ||
+    privacySafePageUrl(currentTab.url) !== request.pageUrl
+  ) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "SubmittedIt rejected an observation that does not match the tab’s current page.",
+      false,
+    );
+  }
+  const state = await loadState();
+  const permissionGranted = await browser.permissions.contains({
+    origins: [inspected.permissionPattern],
+  });
+  if (!permissionGranted || !state.enabledOrigins[inspected.origin]) {
+    throw new RuntimeFailure(
+      "PERMISSION_MISSING",
+      "SubmittedIt ignored this page because site access is not enabled.",
+      true,
+    );
+  }
+  return sender.tab.id;
+}
+
+async function handlePageContextObservation(
+  request: PageContextObservationRequest,
+  sender: Browser.runtime.MessageSender,
+): Promise<BackgroundResponse> {
+  const tabId = await authorizeObservationSender(request, sender);
+  const result = await queueStorageWrite(async () => {
+    let state = await loadState();
+    const active = activeReceiptForTab(state, tabId);
+    if (!active?.confirmationContext) {
+      return { state, changed: false };
+    }
+    if (confirmationContextIsExpired(active.confirmationContext, request.observedAt)) {
+      state = expireConfirmationContext(state, active.receiptId);
+      return { state: await saveState(state), changed: true };
+    }
+    const recorded = recordNavigationObservation(state, tabId, request);
+    if (recorded.deduplicated) {
+      return { state, changed: false };
+    }
+    return { state: await saveState(recorded.state), changed: true };
+  });
+  return { ok: true, snapshot: await buildSnapshot(result.state) };
+}
+
+function purgeExpiredReviewSessions(timestamp: string): void {
+  const time = Date.parse(timestamp);
+  for (const [reviewId, session] of confirmationReviewSessions) {
+    if (Date.parse(session.review.expiresAt) <= time) {
+      confirmationReviewSessions.delete(reviewId);
+    }
+  }
+}
+
+function storeReviewSession(session: ConfirmationReviewSession): void {
+  while (confirmationReviewSessions.size >= MAX_CONFIRMATION_REVIEW_SESSIONS) {
+    const oldest = confirmationReviewSessions.keys().next().value as string | undefined;
+    if (!oldest) {
+      break;
+    }
+    confirmationReviewSessions.delete(oldest);
+  }
+  confirmationReviewSessions.set(session.review.reviewId, session);
+  globalThis.setTimeout(
+    () => {
+      if (confirmationReviewSessions.get(session.review.reviewId) === session) {
+        confirmationReviewSessions.delete(session.review.reviewId);
+      }
+    },
+    Math.max(0, Date.parse(session.review.expiresAt) - Date.now()),
+  );
+}
+
+async function beginSiteConfirmationReview(
+  request: Extract<RuntimeRequest, { type: "BEGIN_SITE_CONFIRMATION_REVIEW" }>,
+): Promise<BackgroundResponse> {
+  const snapshot = await buildSnapshot();
+  const opportunity = snapshot.confirmationOpportunity;
+  if (!opportunity || opportunity.receipt.receiptId !== request.receiptId) {
+    throw new RuntimeFailure(
+      "UNRELATED_TAB",
+      "This tab is not bound to the selected submission attempt.",
+      true,
+    );
+  }
+  if (opportunity.kind === "EXPIRED") {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "The active confirmation-capture window expired. Create a new intentional attempt if needed.",
+      true,
+    );
+  }
+  if (opportunity.kind === "AWAITING_NAVIGATION") {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "No later page or document change is tied to this attempt yet.",
+      true,
+    );
+  }
+  if (opportunity.kind === "PERMISSION_REQUIRED") {
+    throw new RuntimeFailure(
+      "CONFIRMATION_PERMISSION_REQUIRED",
+      "Grant explicit access to the redirected origin before reviewing visible evidence.",
+      true,
+    );
+  }
+  if (snapshot.site.kind !== "supported") {
+    throw new RuntimeFailure(
+      "UNRELATED_TAB",
+      "Open the bound confirmation tab and try again.",
+      true,
+    );
+  }
+  const supportedSite = snapshot.site;
+  const tab = await queryActiveTab();
+  if (!tab || tab.id !== supportedSite.tabId) {
+    throw new RuntimeFailure("UNRELATED_TAB", "The active tab changed before review began.", true);
+  }
+  await injectCaptureScript(supportedSite.tabId);
+  let rawCandidate: unknown;
+  try {
+    rawCandidate = await browser.tabs.sendMessage(
+      supportedSite.tabId,
+      confirmationCandidateCommand(),
+    );
+  } catch {
+    throw new RuntimeFailure(
+      "CONFIRMATION_SELECTION_MISSING",
+      "Select a short visible confirmation message on the page, then try again.",
+      true,
+    );
+  }
+  const candidate = parsePageEvidenceCandidate(rawCandidate);
+  if (!candidate) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_SELECTION_MISSING",
+      "Select a short visible confirmation message on the page, then try again.",
+      true,
+    );
+  }
+  if (candidate.origin !== opportunity.currentOrigin || candidate.pageUrl !== opportunity.pageUrl) {
+    throw new RuntimeFailure(
+      "TAB_NAVIGATED",
+      "The confirmation page changed while SubmittedIt was reading the selected evidence.",
+      true,
+    );
+  }
+
+  const prepared = await queueStorageWrite(async () => {
+    let state = await loadState();
+    let receipt = receiptById(state, request.receiptId);
+    let context = receipt?.confirmationContext;
+    if (
+      !receipt ||
+      receipt.currentStage !== "ATTEMPTED" ||
+      context?.status !== "ACTIVE" ||
+      context.tabId !== supportedSite.tabId
+    ) {
+      throw new RuntimeFailure(
+        "CONFIRMATION_CONTEXT_STALE",
+        "The originating submission context is no longer active.",
+        true,
+      );
+    }
+    if (
+      context.documentInstanceId !== candidate.documentInstanceId ||
+      context.currentPageUrl !== candidate.pageUrl
+    ) {
+      const recorded = recordNavigationObservation(state, supportedSite.tabId, {
+        documentInstanceId: candidate.documentInstanceId,
+        kind: "DOCUMENT",
+        observationId: randomOpaqueId(),
+        observedAt: now(),
+        origin: candidate.origin,
+        pageUrl: candidate.pageUrl,
+      });
+      state = recorded.deduplicated ? state : await saveState(recorded.state);
+      receipt = receiptById(state, request.receiptId);
+      context = receipt?.confirmationContext;
+    }
+    if (!receipt || !context || context.sequence < 1) {
+      throw new RuntimeFailure(
+        "CONFIRMATION_CONTEXT_STALE",
+        "No reviewed navigation sequence is available for this attempt.",
+        true,
+      );
+    }
+    return { state, receipt, context };
+  });
+
+  const timestamp = now();
+  purgeExpiredReviewSessions(timestamp);
+  const reviewId = randomOpaqueId();
+  const reviewExpiresAt = new Date(
+    Math.min(
+      Date.parse(prepared.context.expiresAt),
+      Date.parse(timestamp) + SITE_CONFIRMATION_REVIEW_WINDOW_MS,
+    ),
+  ).toISOString();
+  const review: SiteConfirmationReview = {
+    attemptedEventHash: prepared.receipt.event.eventHash,
+    currentOrigin: prepared.context.currentOrigin,
+    expiresAt: reviewExpiresAt,
+    navigationSequence: prepared.context.sequence,
+    originChanged: prepared.context.currentOrigin !== prepared.context.originalOrigin,
+    originalOrigin: prepared.context.originalOrigin,
+    pageTitle: candidate.pageTitle,
+    pageUrl: candidate.pageUrl,
+    receiptId: prepared.receipt.receiptId,
+    reviewId,
+    selectedText: candidate.selectedText,
+  };
+  storeReviewSession({ candidate, review, tabId: supportedSite.tabId });
+  return {
+    ok: true,
+    snapshot: await buildSnapshot(prepared.state),
+    confirmationReview: review,
+  };
+}
+
+async function saveSiteConfirmation(
+  request: Extract<RuntimeRequest, { type: "SAVE_SITE_CONFIRMATION" }>,
+): Promise<BackgroundResponse> {
+  const initialState = await loadState();
+  const existing = receiptById(initialState, request.receiptId);
+  if (existing?.siteConfirmationEvent) {
+    if (existing.siteConfirmationEvidence?.saveId !== request.saveId) {
+      throw new RuntimeFailure(
+        "CONFIRMATION_ALREADY_EXISTS",
+        "This receipt already has its one Site confirmed event.",
+        false,
+      );
+    }
+    return {
+      ok: true,
+      snapshot: await buildSnapshot(initialState),
+      confirmation: { deduplicated: true, receipt: summarizeAttemptReceipt(existing) },
+    };
+  }
+
+  const timestamp = now();
+  purgeExpiredReviewSessions(timestamp);
+  const session = confirmationReviewSessions.get(request.reviewId);
+  if (!session || session.review.receiptId !== request.receiptId) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_REVIEW_EXPIRED",
+      "This evidence review expired. Select the visible message again.",
+      true,
+    );
+  }
+  const tab = await queryActiveTab();
+  if (!tab || tab.id !== session.tabId) {
+    throw new RuntimeFailure(
+      "UNRELATED_TAB",
+      "Return to the tab bound to this submission before saving evidence.",
+      true,
+    );
+  }
+  const tabUrl = typeof tab.url === "string" ? tab.url : tab.pendingUrl;
+  if (typeof tabUrl !== "string" || privacySafePageUrl(tabUrl) !== session.candidate.pageUrl) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "The confirmation page changed after the evidence review began.",
+      true,
+    );
+  }
+  const inspectedOrigin = inspectNormalizedOrigin(session.candidate.origin);
+  const permissionGranted =
+    inspectedOrigin.ok &&
+    (await browser.permissions.contains({ origins: [inspectedOrigin.permissionPattern] }));
+  if (!permissionGranted) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_PERMISSION_REQUIRED",
+      "Site access was removed before this evidence could be saved.",
+      true,
+    );
+  }
+  let rawContext: unknown;
+  try {
+    rawContext = await browser.tabs.sendMessage(session.tabId, confirmationContextCommand());
+  } catch {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "SubmittedIt could not verify the reviewed page before saving.",
+      true,
+    );
+  }
+  const currentPage = parsePageContextCandidate(rawContext);
+  if (
+    !currentPage ||
+    currentPage.documentInstanceId !== session.candidate.documentInstanceId ||
+    currentPage.origin !== session.candidate.origin ||
+    currentPage.pageUrl !== session.candidate.pageUrl
+  ) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_CONTEXT_STALE",
+      "The page document changed after the evidence review began.",
+      true,
+    );
+  }
+  if (session.review.originChanged && !request.confirmOriginChange) {
+    throw new RuntimeFailure(
+      "CONFIRMATION_ORIGIN_NOT_CONFIRMED",
+      "Confirm the displayed origin change before saving this evidence.",
+      true,
+    );
+  }
+
+  let canonical: ReturnType<typeof canonicalSaveSiteConfirmationInput>;
+  try {
+    canonical = canonicalSaveSiteConfirmationInput(request, session.candidate.selectedText);
+  } catch {
+    throw new RuntimeFailure(
+      "CONFIRMATION_REDACTION_INVALID",
+      "Redaction may remove selected text but cannot add unobserved confirmation content.",
+      true,
+    );
+  }
+
+  const result = await queueStorageWrite(async () => {
+    const state = await loadState();
+    const receipt = receiptById(state, canonical.receiptId);
+    if (receipt?.siteConfirmationEvent) {
+      if (
+        !receipt.siteConfirmationEvidence ||
+        receipt.siteConfirmationEvidence.saveId !== canonical.saveId
+      ) {
+        throw new RuntimeFailure(
+          "CONFIRMATION_ALREADY_EXISTS",
+          "This receipt already has its one Site confirmed event.",
+          false,
+        );
+      }
+      const appended = appendSiteConfirmation(state, {
+        receiptId: canonical.receiptId,
+        event: receipt.siteConfirmationEvent,
+        evidence: receipt.siteConfirmationEvidence,
+      });
+      return { saved: state, ...appended };
+    }
+    const context = receipt?.confirmationContext;
+    if (
+      !receipt ||
+      receipt.currentStage !== "ATTEMPTED" ||
+      context?.status !== "ACTIVE" ||
+      context.tabId !== session.tabId ||
+      context.sequence !== session.review.navigationSequence ||
+      context.currentOrigin !== session.candidate.origin ||
+      context.currentPageUrl !== session.candidate.pageUrl ||
+      confirmationContextIsExpired(context, timestamp)
+    ) {
+      throw new RuntimeFailure(
+        "CONFIRMATION_CONTEXT_STALE",
+        "The tab or navigation context changed during evidence review.",
+        true,
+      );
+    }
+    const event = createSiteConfirmationEvent(receipt.event, {
+      evidenceType: canonical.evidenceType,
+      message: canonical.message,
+      occurredAt: timestamp,
+      pageUrl: session.candidate.pageUrl,
+      ...(canonical.reference === undefined ? {} : { reference: canonical.reference }),
+    });
+    const appended = appendSiteConfirmation(state, {
+      receiptId: canonical.receiptId,
+      event,
+      evidence: {
+        displaySnippet: siteConfirmationSnippet(canonical.message, canonical.reference),
+        navigationSequence: context.sequence,
+        originChangeConfirmed: session.review.originChanged,
+        pageOrigin: session.candidate.origin,
+        pageTitle: session.candidate.pageTitle,
+        pageUrl: session.candidate.pageUrl,
+        saveId: canonical.saveId,
+        savedAt: timestamp,
+      },
+    });
+    const saved = appended.deduplicated ? state : await saveState(appended.state);
+    return { saved, ...appended };
+  });
+  confirmationReviewSessions.delete(request.reviewId);
+  return {
+    ok: true,
+    snapshot: await buildSnapshot(result.saved),
+    confirmation: {
+      deduplicated: result.deduplicated,
+      receipt: summarizeAttemptReceipt(result.receipt),
+    },
+  };
+}
+
+async function cancelSiteConfirmationReview(
+  request: Extract<RuntimeRequest, { type: "CANCEL_SITE_CONFIRMATION_REVIEW" }>,
+): Promise<BackgroundResponse> {
+  const session = confirmationReviewSessions.get(request.reviewId);
+  if (session?.review.receiptId === request.receiptId) {
+    confirmationReviewSessions.delete(request.reviewId);
+  }
+  return { ok: true, snapshot: await buildSnapshot() };
+}
+
 async function handleRequest(
   request: RuntimeRequest,
   sender: Browser.runtime.MessageSender,
@@ -705,6 +1251,14 @@ async function handleRequest(
       return handleCaptureAttempt(request, sender);
     case "CAPTURE_PAGE_ERROR":
       return handleCapturePageError(request, sender);
+    case "PAGE_CONTEXT_OBSERVED":
+      return handlePageContextObservation(request, sender);
+    case "BEGIN_SITE_CONFIRMATION_REVIEW":
+      return beginSiteConfirmationReview(request);
+    case "CANCEL_SITE_CONFIRMATION_REVIEW":
+      return cancelSiteConfirmationReview(request);
+    case "SAVE_SITE_CONFIRMATION":
+      return saveSiteConfirmation(request);
   }
 }
 
@@ -774,6 +1328,22 @@ async function updateOriginsFromPermissionEvent(
   await injectCaptureForEnabledTabs(saved);
 }
 
+async function closeConfirmationContextForTab(tabId: number): Promise<void> {
+  for (const [reviewId, session] of confirmationReviewSessions) {
+    if (session.tabId === tabId) {
+      confirmationReviewSessions.delete(reviewId);
+    }
+  }
+  await queueStorageWrite(async () => {
+    const state = await loadState();
+    const active = activeReceiptForTab(state, tabId);
+    if (!active) {
+      return;
+    }
+    await saveState(expireConfirmationContext(state, active.receiptId));
+  });
+}
+
 async function initializeExtension(): Promise<void> {
   let state = await loadState();
   state = await reconcileAllPermissions(state);
@@ -817,6 +1387,9 @@ export default defineBackground({
     });
     browser.permissions.onRemoved.addListener((permissions) => {
       ignoreBackgroundFailure(updateOriginsFromPermissionEvent(permissions.origins, false));
+    });
+    browser.tabs.onRemoved.addListener((tabId) => {
+      ignoreBackgroundFailure(closeConfirmationContextForTab(tabId));
     });
     browser.runtime.onMessage.addListener((message, sender) => {
       if (sender.id !== browser.runtime.id) {

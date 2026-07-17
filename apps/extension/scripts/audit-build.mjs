@@ -18,11 +18,13 @@ const prohibitedPermissions = new Set([
   "clipboardWrite",
   "cookies",
   "debugger",
+  "desktopCapture",
   "downloads",
   "history",
   "identity",
   "management",
   "nativeMessaging",
+  "tabCapture",
   "tabs",
   "webNavigation",
   "webRequest",
@@ -184,6 +186,10 @@ for (const requiredCaptureBoundary of [
   "getRegisteredContentScripts",
   "permissions.contains",
   "ATTEMPTED",
+  "PENDING_ACCEPTANCE",
+  "CANCEL_SITE_CONFIRMATION_REVIEW",
+  "SAVE_SITE_CONFIRMATION",
+  "CONFIRMATION_ALREADY_EXISTS",
 ]) {
   if (!workerSource.includes(requiredCaptureBoundary)) {
     fail(`service worker is missing capture boundary ${requiredCaptureBoundary}`);
@@ -200,6 +206,7 @@ for (const requiredRuntimeBoundary of [
   "content-scripts/capture.js",
   "SENSITIVE_HIDDEN_TOKEN",
   "FILE_METADATA_NOT_OPTED_IN",
+  "SITE_CONFIRMED",
 ]) {
   if (!javascriptSource.includes(requiredRuntimeBoundary)) {
     fail(`compiled runtime is missing reviewed boundary ${requiredRuntimeBoundary}`);
@@ -212,9 +219,27 @@ for (const requiredCaptureCapability of [
   "PASSWORD",
   "one-time-code",
   "CAPTURE_ATTEMPT",
+  "MutationObserver",
+  "PAGE_CONTEXT_OBSERVED",
+  "READ_PAGE_CONTEXT",
+  "READ_VISIBLE_SELECTION",
+  "getSelection",
 ]) {
   if (!captureSource.includes(requiredCaptureCapability)) {
     fail(`capture bundle is missing reviewed capability ${requiredCaptureCapability}`);
+  }
+}
+
+for (const forbiddenRuntimeCapability of [
+  "captureVisibleTab",
+  "getDisplayMedia",
+  "tabCapture",
+  "desktopCapture",
+  "html2canvas",
+  "testnet.monad",
+]) {
+  if (javascriptSource.includes(forbiddenRuntimeCapability)) {
+    fail(`compiled runtime contains out-of-scope capability: ${forbiddenRuntimeCapability}`);
   }
 }
 for (const forbiddenCaptureCapability of [

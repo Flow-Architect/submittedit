@@ -15,6 +15,7 @@ export function syntheticCaptureRequest(
     actionOrigin: ORIGIN,
     attemptId: "A".repeat(43),
     capturedAt: NOW,
+    documentInstanceId: "E".repeat(43),
     fields: [
       {
         controlType: "TEXT",

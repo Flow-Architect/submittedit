@@ -57,6 +57,13 @@ Operational services may store encrypted receipt blobs, ciphertext integrity met
 
 The extension must exclude passwords, hidden authentication and CSRF tokens, browser-autofill secrets, and file contents. File metadata may be included only after explicit opt-in.
 
+Website confirmation is never inferred from navigation alone. The current extension waits for a
+later change in the same bound tab, reads only text the user deliberately selects, permits
+deletion-only redaction, and creates at most one linked Site confirmed event after explicit save.
+Page title, privacy-safe URL, navigation binding, and a bounded display snippet remain local review
+metadata. Unselected page text, DOM snapshots, screenshots, and cross-origin content without a new
+permission grant are not captured.
+
 ## Hackathon MVP
 
 The required MVP includes:

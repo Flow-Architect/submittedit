@@ -4,6 +4,7 @@ import {
   hashEventCore,
   validateEventChain,
   type AttemptedEventCore,
+  type SiteConfirmedEventCore,
 } from "../../../../packages/receipt-core/dist/index.js";
 import {
   chromium,
@@ -11,6 +12,7 @@ import {
   test,
   type BrowserContext,
   type Page,
+  type TestInfo,
   type Worker,
 } from "@playwright/test";
 import type { BackgroundResponse, RuntimeRequest } from "../../lib/messages";
@@ -18,11 +20,13 @@ import { type LocalReceiptSummary, type StoredAttemptReceipt } from "../../lib/s
 
 const fixtureOrigin = "http://127.0.0.1:4179";
 const fixturePattern = `${fixtureOrigin}/*`;
+const redirectedOrigin = "http://localhost:4179";
+const redirectedPattern = `${redirectedOrigin}/*`;
 const productionExtensionPath = resolve(".output/chrome-mv3");
 const extensionStorageKey = "submittedit.localState";
 
 interface BrowserExtensionState {
-  schemaVersion: 2;
+  schemaVersion: 3;
   hasSeenWelcome: boolean;
   settings: {
     reminderInterval: string;
@@ -39,6 +43,7 @@ interface ExtensionChrome {
   permissions: {
     contains(permission: { origins: string[] }): Promise<boolean>;
     request(permission: { origins: string[] }): Promise<boolean>;
+    remove(permission: { origins: string[] }): Promise<boolean>;
   };
   runtime: {
     getManifest(): {
@@ -111,6 +116,13 @@ async function containsFixturePermission(worker: Worker): Promise<boolean> {
   }, fixturePattern);
 }
 
+async function containsOriginPermission(worker: Worker, pattern: string): Promise<boolean> {
+  return worker.evaluate((originPattern) => {
+    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+    return chromeApi.permissions.contains({ origins: [originPattern] });
+  }, pattern);
+}
+
 async function readExtensionState(worker: Worker): Promise<BrowserExtensionState> {
   const stored = await worker.evaluate(async (key) => {
     const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
@@ -122,7 +134,7 @@ async function readExtensionState(worker: Worker): Promise<BrowserExtensionState
     state === null ||
     Array.isArray(state) ||
     !("schemaVersion" in state) ||
-    state.schemaVersion !== 2 ||
+    state.schemaVersion !== 3 ||
     !("receiptIndex" in state) ||
     !Array.isArray(state.receiptIndex)
   ) {
@@ -131,12 +143,15 @@ async function readExtensionState(worker: Worker): Promise<BrowserExtensionState
   return state as unknown as BrowserExtensionState;
 }
 
-async function preparePermissionBootstrapExtension(destination: string): Promise<string> {
+async function preparePermissionBootstrapExtension(
+  destination: string,
+  patterns: string[] = [fixturePattern],
+): Promise<string> {
   await cp(productionExtensionPath, destination, { recursive: true });
   const manifestPath = join(destination, "manifest.json");
   const productionManifest = await readFile(manifestPath, "utf8");
   const bootstrapManifest = JSON.parse(productionManifest) as Record<string, unknown>;
-  bootstrapManifest.host_permissions = [fixturePattern];
+  bootstrapManifest.host_permissions = patterns;
   await writeFile(manifestPath, `${JSON.stringify(bootstrapManifest)}\n`, {
     mode: 0o600,
   });
@@ -152,10 +167,51 @@ async function restoreProductionManifest(
   });
 }
 
+async function launchInstalledProductionExtension(
+  testInfo: TestInfo,
+  patterns: string[],
+): Promise<{
+  browserExtensionPath: string;
+  context: BrowserContext;
+  extensionId: string;
+  userDataDirectory: string;
+  worker: Worker;
+}> {
+  const userDataDirectory = testInfo.outputPath("extension-profile");
+  const browserExtensionPath = testInfo.outputPath("unpacked-extension");
+  const productionManifest = await preparePermissionBootstrapExtension(
+    browserExtensionPath,
+    patterns,
+  );
+  let context = await launchExtensionContext(userDataDirectory, browserExtensionPath);
+  let worker = await getServiceWorker(context);
+  const extensionId = worker.url().split("/")[2];
+  if (!extensionId) {
+    throw new Error("Chromium did not expose the unpacked extension ID.");
+  }
+  for (const pattern of patterns) {
+    await expect.poll(() => containsOriginPermission(worker, pattern)).toBe(true);
+  }
+  await context.close();
+  await restoreProductionManifest(browserExtensionPath, productionManifest);
+  context = await launchExtensionContext(userDataDirectory, browserExtensionPath);
+  worker = await getServiceWorker(context);
+  expect(worker.url().split("/")[2]).toBe(extensionId);
+  return { browserExtensionPath, context, extensionId, userDataDirectory, worker };
+}
+
 function attemptedCore(state: BrowserExtensionState, index: number): AttemptedEventCore {
   const core = state.receiptIndex[index]?.event.core;
   if (!core || core.stage !== "ATTEMPTED") {
     throw new Error(`Receipt ${index} is not an Attempted event.`);
+  }
+  return core;
+}
+
+function siteConfirmedCore(state: BrowserExtensionState, index: number): SiteConfirmedEventCore {
+  const core = state.receiptIndex[index]?.siteConfirmationEvent?.core;
+  if (!core || core.stage !== "SITE_CONFIRMED") {
+    throw new Error(`Receipt ${index} is not a Site confirmed event.`);
   }
   return core;
 }
@@ -224,7 +280,7 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
 
   const initialState = await readExtensionState(worker);
   expect(initialState).toMatchObject({
-    schemaVersion: 2,
+    schemaVersion: 3,
     receiptIndex: [],
     enabledOrigins: {
       [fixtureOrigin]: {
@@ -263,12 +319,14 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
     formPage.waitForURL(`${fixtureOrigin}/submitted`),
     formPage.getByRole("button", { name: "Submit synthetic fixture" }).click(),
   ]);
-  await expect(panelPage.getByText("Attempted", { exact: true }).first()).toBeVisible();
-  await expect(panelPage.getByText("Submission attempt captured.")).toBeVisible();
-  await expect(panelPage.getByText("Acceptance not yet confirmed.")).toBeVisible();
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(1);
+  await expect(
+    panelPage.getByRole("heading", { name: "Review what the website displayed" }),
+  ).toBeVisible();
+  await expect(panelPage.getByRole("listitem").first()).toContainText("Attempted");
+  await expect(panelPage.getByRole("listitem").first()).toContainText("Pending acceptance");
   await expect(panelPage.getByText("Accepted", { exact: true })).toHaveCount(0);
 
-  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(1);
   let capturedState = await readExtensionState(worker);
   const firstReceipt = capturedState.receiptIndex[0]!;
   const firstCore = attemptedCore(capturedState, 0);
@@ -346,8 +404,11 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   panelPage.on("pageerror", (error) => runtimeErrors.push(error.message));
   await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
   await formPage.bringToFront();
-  await expect(panelPage.getByText("Attempted", { exact: true }).first()).toBeVisible();
-  await expect(panelPage.getByText("Acceptance not yet confirmed.")).toBeVisible();
+  await expect(
+    panelPage.getByRole("heading", { name: "Review what the website displayed" }),
+  ).toBeVisible();
+  await expect(panelPage.getByRole("listitem").first()).toContainText("Attempted");
+  await expect(panelPage.getByRole("listitem").first()).toContainText("Pending acceptance");
 
   await formPage.goto(`${fixtureOrigin}/same-page-form`);
   await formPage.bringToFront();
@@ -447,7 +508,7 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
 
   const resetState = await readExtensionState(worker);
   expect(resetState).toMatchObject({
-    schemaVersion: 2,
+    schemaVersion: 3,
     hasSeenWelcome: false,
     settings: {
       reminderInterval: "off",
@@ -474,5 +535,482 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
     observedHttpRequests.some((url) => /monad|rpc|submittedit-demo-authority/iu.test(url)),
   ).toBe(false);
 
+  await context.close();
+});
+
+test("site confirmation review creates one linked pending event and survives restart", async ({}, testInfo) => {
+  const installed = await launchInstalledProductionExtension(testInfo, [fixturePattern]);
+  let { context, worker } = installed;
+  const observedHttpRequests: string[] = [];
+  const runtimeErrors: string[] = [];
+  context.on("request", (request) => {
+    if (request.url().startsWith("http://") || request.url().startsWith("https://")) {
+      observedHttpRequests.push(request.url());
+    }
+  });
+  context.on("weberror", (error) => runtimeErrors.push(error.error().message));
+
+  const formPage = await context.newPage();
+  await formPage.goto(`${fixtureOrigin}/with-form`);
+  let panelPage = await context.newPage();
+  panelPage.on("pageerror", (error) => runtimeErrors.push(error.message));
+  await panelPage.goto(`chrome-extension://${installed.extensionId}/sidepanel.html`);
+  await formPage.bringToFront();
+  await panelPage.getByRole("button", { name: "Continue" }).click();
+  await expect(panelPage.getByText("Prepared", { exact: true })).toBeVisible();
+
+  await Promise.all([
+    formPage.waitForURL(`${fixtureOrigin}/submitted`),
+    formPage.getByRole("button", { name: "Submit synthetic fixture" }).click(),
+  ]);
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(1);
+  await expect(panelPage.getByText("Relevant navigation detected", { exact: true })).toBeVisible();
+  await expect(
+    panelPage.getByRole("button", { name: "Capture confirmation evidence" }),
+  ).toBeVisible();
+  const attemptedReceipt = (await readExtensionState(worker)).receiptIndex[0]!;
+  expect(attemptedReceipt.siteConfirmationEvent).toBeNull();
+
+  await formPage.locator("#mixed-confirmation").selectText();
+  await formPage.bringToFront();
+  const mixedSelectionResult = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: attemptedReceipt.receiptId,
+  });
+  expect(mixedSelectionResult).toMatchObject({
+    ok: false,
+    error: { code: "CONFIRMATION_SELECTION_MISSING" },
+  });
+  expect((await readExtensionState(worker)).receiptIndex[0]?.siteConfirmationEvent).toBeNull();
+
+  await formPage.locator("#confirmation-evidence").selectText();
+  await formPage.bringToFront();
+  await panelPage.getByRole("button", { name: "Capture confirmation evidence" }).click();
+  await expect(
+    panelPage.getByRole("heading", { name: "Review website confirmation" }),
+  ).toBeVisible();
+  await expect(panelPage.getByText("Synthetic filing status", { exact: true })).toBeVisible();
+  await expect(panelPage.getByText(`${fixtureOrigin}/submitted`, { exact: true })).toBeVisible();
+  await panelPage.getByRole("button", { name: "Cancel without saving" }).click();
+  expect((await readExtensionState(worker)).receiptIndex[0]?.siteConfirmationEvent).toBeNull();
+
+  const cancelledReview = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: (await readExtensionState(worker)).receiptIndex[0]!.receiptId,
+  });
+  if (!cancelledReview.ok || !cancelledReview.confirmationReview) {
+    throw new Error("Could not create the review session used to verify cancellation.");
+  }
+  const cancelledSession = cancelledReview.confirmationReview;
+  const cancelResult = await sendExtensionMessage(panelPage, {
+    type: "CANCEL_SITE_CONFIRMATION_REVIEW",
+    receiptId: cancelledSession.receiptId,
+    reviewId: cancelledSession.reviewId,
+  });
+  expect(cancelResult.ok).toBe(true);
+  const cancelledSave = await sendExtensionMessage(panelPage, {
+    type: "SAVE_SITE_CONFIRMATION",
+    confirmOriginChange: false,
+    evidenceType: "CONFIRMATION_PAGE",
+    message: cancelledSession.selectedText,
+    receiptId: cancelledSession.receiptId,
+    reviewId: cancelledSession.reviewId,
+    saveId: "C".repeat(43),
+  });
+  expect(cancelledSave).toMatchObject({
+    ok: false,
+    error: { code: "CONFIRMATION_REVIEW_EXPIRED" },
+  });
+
+  await formPage.locator("#confirmation-evidence").selectText();
+  await formPage.bringToFront();
+  await panelPage.getByRole("button", { name: "Capture confirmation evidence" }).click();
+  const redactedMessage = "Transmission queued. Queued is not accepted.";
+  await panelPage
+    .getByLabel("Confirmation text — redact by removing characters")
+    .fill(redactedMessage);
+  await panelPage.getByLabel("Optional visible reference").fill("SYNTHETIC-123");
+  await expect(
+    panelPage.getByText("Pending acceptance — website confirmation is not authority acceptance."),
+  ).toBeVisible();
+  await panelPage.getByRole("button", { name: "Save website confirmation" }).click();
+
+  await expect(
+    panelPage.getByRole("heading", { name: "Website confirmation captured" }),
+  ).toBeVisible();
+  await expect(
+    panelPage.getByText("Official acceptance still pending", { exact: true }),
+  ).toBeVisible();
+  await expect(panelPage.getByText("Accepted", { exact: true })).toHaveCount(0);
+  await expect(panelPage.getByText("Rejected", { exact: true })).toHaveCount(0);
+
+  await expect
+    .poll(async () => (await readExtensionState(worker)).receiptIndex[0]?.currentStage)
+    .toBe("SITE_CONFIRMED");
+  const confirmedState = await readExtensionState(worker);
+  const confirmedReceipt = confirmedState.receiptIndex[0]!;
+  const siteCore = siteConfirmedCore(confirmedState, 0);
+  expect(confirmedReceipt.siteConfirmationEvent?.eventHash).toBe(hashEventCore(siteCore));
+  expect(siteCore.previousEventHash).toBe(confirmedReceipt.event.eventHash);
+  expect(siteCore.siteConfirmation).toEqual({
+    evidenceType: "CONFIRMATION_PAGE",
+    message: redactedMessage,
+    pageUrl: `${fixtureOrigin}/submitted`,
+    reference: "SYNTHETIC-123",
+  });
+  expect(
+    validateEventChain([confirmedReceipt.event, confirmedReceipt.siteConfirmationEvent!]),
+  ).toMatchObject({
+    currentStage: "SITE_CONFIRMED",
+    latestEventHash: confirmedReceipt.siteConfirmationEvent?.eventHash,
+    receiptId: confirmedReceipt.receiptId,
+  });
+  expect(confirmedReceipt).toMatchObject({
+    currentStage: "SITE_CONFIRMED",
+    derivedStatus: "PENDING_ACCEPTANCE",
+    confirmationContext: { status: "COMPLETED" },
+    siteConfirmationEvidence: {
+      displaySnippet: redactedMessage,
+      originChangeConfirmed: false,
+      pageOrigin: fixtureOrigin,
+      pageTitle: "Synthetic filing status",
+    },
+    authorityEvent: null,
+    extensionSignature: null,
+    chainAnchor: null,
+  });
+
+  const saveId = confirmedReceipt.siteConfirmationEvidence!.saveId;
+  const retry = await sendExtensionMessage(panelPage, {
+    type: "SAVE_SITE_CONFIRMATION",
+    confirmOriginChange: false,
+    evidenceType: "CONFIRMATION_PAGE",
+    message: redactedMessage,
+    receiptId: confirmedReceipt.receiptId,
+    reference: "SYNTHETIC-123",
+    reviewId: "R".repeat(43),
+    saveId,
+  });
+  expect(retry).toMatchObject({
+    ok: true,
+    confirmation: { deduplicated: true, receipt: { status: "SITE_CONFIRMED" } },
+  });
+  const secondSave = await sendExtensionMessage(panelPage, {
+    type: "SAVE_SITE_CONFIRMATION",
+    confirmOriginChange: false,
+    evidenceType: "CONFIRMATION_PAGE",
+    message: redactedMessage,
+    receiptId: confirmedReceipt.receiptId,
+    reviewId: "R".repeat(43),
+    saveId: "T".repeat(43),
+  });
+  expect(secondSave).toMatchObject({
+    ok: false,
+    error: { code: "CONFIRMATION_ALREADY_EXISTS" },
+  });
+  expect((await readExtensionState(worker)).receiptIndex[0]?.siteConfirmationEvent?.eventHash).toBe(
+    confirmedReceipt.siteConfirmationEvent?.eventHash,
+  );
+
+  await formPage.reload();
+  await panelPage.close();
+  panelPage = await context.newPage();
+  await panelPage.goto(`chrome-extension://${installed.extensionId}/sidepanel.html`);
+  await formPage.bringToFront();
+  await expect(
+    panelPage.getByRole("heading", { name: "Website confirmation captured" }),
+  ).toBeVisible();
+  await expect(
+    panelPage.getByText("Official acceptance still pending", { exact: true }),
+  ).toBeVisible();
+
+  await panelPage.close();
+  await formPage.close();
+  await context.close();
+  context = await launchExtensionContext(
+    installed.userDataDirectory,
+    installed.browserExtensionPath,
+  );
+  worker = await getServiceWorker(context);
+  const restarted = await readExtensionState(worker);
+  expect(restarted.receiptIndex[0]?.siteConfirmationEvent?.eventHash).toBe(
+    confirmedReceipt.siteConfirmationEvent?.eventHash,
+  );
+  const reopenedStatus = await context.newPage();
+  await reopenedStatus.goto(`${fixtureOrigin}/submitted`);
+  const reopenedPanel = await context.newPage();
+  await reopenedPanel.goto(`chrome-extension://${installed.extensionId}/sidepanel.html`);
+  await reopenedStatus.bringToFront();
+  await expect(
+    reopenedPanel.getByRole("heading", { name: "Website confirmation captured" }),
+  ).toBeVisible();
+
+  expect(runtimeErrors).toEqual([]);
+  expect(observedHttpRequests.every((url) => url.startsWith(`${fixtureOrigin}/`))).toBe(true);
+  expect(observedHttpRequests.some((url) => /monad|rpc|api\/demo/iu.test(url))).toBe(false);
+  await context.close();
+});
+
+test("site confirmation navigation binding handles SPA, history, tabs, stale receipts, and origin changes", async ({}, testInfo) => {
+  test.setTimeout(120_000);
+  const installed = await launchInstalledProductionExtension(testInfo, [
+    fixturePattern,
+    redirectedPattern,
+  ]);
+  const { context, extensionId, worker } = installed;
+  const observedHttpRequests: string[] = [];
+  context.on("request", (request) => {
+    if (request.url().startsWith("http://") || request.url().startsWith("https://")) {
+      observedHttpRequests.push(request.url());
+    }
+  });
+
+  const spaPage = await context.newPage();
+  await spaPage.goto(`${fixtureOrigin}/spa-form`);
+  const panelPage = await context.newPage();
+  await panelPage.goto(`chrome-extension://${extensionId}/sidepanel.html`);
+  await spaPage.bringToFront();
+  await panelPage.getByRole("button", { name: "Continue" }).click();
+  await spaPage.getByRole("button", { name: "Submit SPA fixture" }).click();
+  await expect(spaPage).toHaveURL(`${fixtureOrigin}/spa-confirmation`);
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(1);
+  await expect
+    .poll(async () =>
+      (await readExtensionState(worker)).receiptIndex[0]?.confirmationContext?.observations.some(
+        (observation) =>
+          observation.kind === "DOM_UPDATE" &&
+          observation.pageUrl === `${fixtureOrigin}/spa-confirmation`,
+      ),
+    )
+    .toBe(true);
+  const spaAttempt = (await readExtensionState(worker)).receiptIndex[0]!;
+  await expect(panelPage.getByText("Relevant navigation detected", { exact: true })).toBeVisible();
+
+  const unrelatedTab = await context.newPage();
+  await unrelatedTab.goto(`${fixtureOrigin}/submitted`);
+  await unrelatedTab.locator("#confirmation-evidence").selectText();
+  await unrelatedTab.bringToFront();
+  const unrelatedResult = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: spaAttempt.receiptId,
+  });
+  expect(unrelatedResult).toMatchObject({ ok: false, error: { code: "UNRELATED_TAB" } });
+
+  const duplicatedTab = await context.newPage();
+  await duplicatedTab.goto(`${fixtureOrigin}/spa-confirmation`);
+  await duplicatedTab.bringToFront();
+  const duplicateResult = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: spaAttempt.receiptId,
+  });
+  expect(duplicateResult).toMatchObject({ ok: false, error: { code: "UNRELATED_TAB" } });
+  await duplicatedTab.close();
+  await unrelatedTab.close();
+
+  await spaPage.bringToFront();
+  await spaPage.locator("#confirmation-evidence").selectText();
+  await expect(panelPage.getByText("Relevant navigation detected", { exact: true })).toBeVisible();
+  await panelPage.getByRole("button", { name: "Capture confirmation evidence" }).click();
+  await panelPage.getByLabel("Evidence type").selectOption("INLINE_MESSAGE");
+  await panelPage.getByLabel("Optional visible reference").fill("SPA-123");
+  await panelPage.getByRole("button", { name: "Save website confirmation" }).click();
+  await expect(
+    panelPage.getByRole("heading", { name: "Website confirmation captured" }),
+  ).toBeVisible();
+  const savedSpa = (await readExtensionState(worker)).receiptIndex[0]!;
+  expect(savedSpa.confirmationContext?.observations).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        kind: "DOM_UPDATE",
+        pageUrl: `${fixtureOrigin}/spa-confirmation`,
+      }),
+    ]),
+  );
+  expect(savedSpa.siteConfirmationEvent?.core).toMatchObject({
+    stage: "SITE_CONFIRMED",
+    previousEventHash: savedSpa.event.eventHash,
+    siteConfirmation: { evidenceType: "INLINE_MESSAGE", reference: "SPA-123" },
+  });
+
+  const redirectPage = await context.newPage();
+  await redirectPage.goto(`${fixtureOrigin}/redirect-form`);
+  await redirectPage.bringToFront();
+  await Promise.all([
+    redirectPage.waitForURL(`${fixtureOrigin}/redirected-confirmation`),
+    redirectPage.getByRole("button", { name: "Submit redirect fixture" }).click(),
+  ]);
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(2);
+  const redirectAttempt = (await readExtensionState(worker)).receiptIndex[0]!;
+  await redirectPage.locator("#confirmation-evidence").selectText();
+  await redirectPage.bringToFront();
+  const staleReview = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: redirectAttempt.receiptId,
+  });
+  if (!staleReview.ok || !staleReview.confirmationReview) {
+    throw new Error("Could not create the review session used to verify stale navigation.");
+  }
+  await redirectPage.goto(`${fixtureOrigin}/submitted`);
+  const staleSave = await sendExtensionMessage(panelPage, {
+    type: "SAVE_SITE_CONFIRMATION",
+    confirmOriginChange: false,
+    evidenceType: "REDIRECT",
+    message: staleReview.confirmationReview.selectedText,
+    receiptId: redirectAttempt.receiptId,
+    reviewId: staleReview.confirmationReview.reviewId,
+    saveId: "N".repeat(43),
+  });
+  expect(staleSave).toMatchObject({
+    ok: false,
+    error: { code: "CONFIRMATION_CONTEXT_STALE" },
+  });
+  expect(
+    (await readExtensionState(worker)).receiptIndex.find(
+      (receipt) => receipt.receiptId === redirectAttempt.receiptId,
+    )?.siteConfirmationEvent,
+  ).toBeNull();
+  await redirectPage.getByRole("link", { name: "Open a later confirmation step" }).click();
+  await expect(redirectPage).toHaveURL(`${fixtureOrigin}/confirmation-step-two`);
+  await redirectPage.goBack();
+  await expect(redirectPage).toHaveURL(`${fixtureOrigin}/submitted`);
+  await redirectPage.goForward();
+  await expect(redirectPage).toHaveURL(`${fixtureOrigin}/confirmation-step-two`);
+  await redirectPage.reload();
+  await redirectPage.locator("#confirmation-evidence").selectText();
+  await redirectPage.bringToFront();
+  await expect(panelPage.getByText("Relevant navigation detected", { exact: true })).toBeVisible();
+  await panelPage.getByRole("button", { name: "Capture confirmation evidence" }).click();
+  await panelPage.getByLabel("Evidence type").selectOption("REDIRECT");
+  await panelPage.getByLabel("Optional visible reference").fill("SYNTHETIC-456");
+  await panelPage.getByRole("button", { name: "Save website confirmation" }).click();
+  await expect(
+    panelPage.getByRole("heading", { name: "Website confirmation captured" }),
+  ).toBeVisible();
+  const historyReceipt = (await readExtensionState(worker)).receiptIndex[0]!;
+  expect(historyReceipt.confirmationContext?.sequence).toBeGreaterThanOrEqual(4);
+  expect(
+    historyReceipt.confirmationContext?.observations.filter((item) => item.kind === "DOCUMENT")
+      .length,
+  ).toBeGreaterThanOrEqual(2);
+  expect(historyReceipt.confirmationContext).toMatchObject({
+    currentPageUrl: `${fixtureOrigin}/confirmation-step-two`,
+    status: "COMPLETED",
+  });
+  expect(historyReceipt.siteConfirmationEvidence).toMatchObject({
+    pageUrl: `${fixtureOrigin}/confirmation-step-two`,
+  });
+  expect(historyReceipt.siteConfirmationEvent?.core).toMatchObject({
+    stage: "SITE_CONFIRMED",
+    previousEventHash: historyReceipt.event.eventHash,
+    siteConfirmation: {
+      message: "Second visible confirmation. Reference SYNTHETIC-456.",
+    },
+  });
+
+  const repeatedPage = await context.newPage();
+  await repeatedPage.goto(`${fixtureOrigin}/same-page-form`);
+  await repeatedPage.bringToFront();
+  await repeatedPage.evaluate(() => {
+    document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
+  });
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(3);
+  const olderPending = (await readExtensionState(worker)).receiptIndex[0]!;
+  await repeatedPage.waitForTimeout(1_700);
+  await repeatedPage.evaluate(() => {
+    document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
+  });
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(4);
+  const multipleState = await readExtensionState(worker);
+  const newestPending = multipleState.receiptIndex[0]!;
+  expect(newestPending.receiptId).not.toBe(olderPending.receiptId);
+  expect(newestPending.confirmationContext?.status).toBe("ACTIVE");
+  expect(
+    multipleState.receiptIndex.find((receipt) => receipt.receiptId === olderPending.receiptId)
+      ?.confirmationContext?.status,
+  ).toBe("SUPERSEDED");
+  await repeatedPage.bringToFront();
+  const staleResult = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: olderPending.receiptId,
+  });
+  expect(staleResult).toMatchObject({ ok: false, error: { code: "UNRELATED_TAB" } });
+  expect((await readExtensionState(worker)).receiptIndex[0]?.siteConfirmationEvent).toBeNull();
+
+  const crossPage = await context.newPage();
+  await crossPage.goto(`${fixtureOrigin}/same-page-form`);
+  await crossPage.evaluate(() => {
+    document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
+  });
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(5);
+  await crossPage.goto(`${redirectedOrigin}/cross-origin-confirmation`);
+  await crossPage.locator("#confirmation-evidence").selectText();
+  await crossPage.bringToFront();
+  const originAlert = panelPage
+    .getByRole("alert")
+    .filter({ hasText: "Origin changed during the bound navigation" });
+  await expect(originAlert).toBeVisible();
+  await expect(originAlert).toContainText(`Original: ${fixtureOrigin}`);
+  await expect(originAlert).toContainText(`Current: ${redirectedOrigin}`);
+  await panelPage.getByRole("button", { name: "Capture confirmation evidence" }).click();
+  await expect(panelPage.getByRole("button", { name: "Save website confirmation" })).toBeDisabled();
+  await panelPage.getByLabel(/I confirm this navigation/u).check();
+  await panelPage.getByLabel("Evidence type").selectOption("REDIRECT");
+  await panelPage.getByLabel("Optional visible reference").fill("CROSS-123");
+  await panelPage.getByRole("button", { name: "Save website confirmation" }).click();
+  await expect(
+    panelPage.getByRole("heading", { name: "Website confirmation captured" }),
+  ).toBeVisible();
+  const crossReceipt = (await readExtensionState(worker)).receiptIndex[0]!;
+  expect(crossReceipt.siteConfirmationEvidence).toMatchObject({
+    originChangeConfirmed: true,
+    pageOrigin: redirectedOrigin,
+  });
+
+  const missingPermissionPage = await context.newPage();
+  await missingPermissionPage.goto(`${fixtureOrigin}/same-page-form`);
+  await missingPermissionPage.evaluate(() => {
+    document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
+  });
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(6);
+  const missingPermissionReceipt = (await readExtensionState(worker)).receiptIndex[0]!;
+  await missingPermissionPage.goto(`${redirectedOrigin}/cross-origin-confirmation`);
+  await expect
+    .poll(
+      async () =>
+        (await readExtensionState(worker)).receiptIndex[0]?.confirmationContext?.currentOrigin,
+    )
+    .toBe(redirectedOrigin);
+  await worker.evaluate(async (pattern) => {
+    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+    await chromeApi.permissions.remove({ origins: [pattern] });
+  }, redirectedPattern);
+  await expect.poll(() => containsOriginPermission(worker, redirectedPattern)).toBe(false);
+  await missingPermissionPage.bringToFront();
+  const permissionWarning = panelPage.locator("section").filter({
+    has: panelPage.getByRole("heading", {
+      name: "Review the redirected site before granting access",
+    }),
+  });
+  await expect(permissionWarning).toBeVisible();
+  await expect(permissionWarning).toContainText(fixtureOrigin);
+  await expect(permissionWarning).toContainText(redirectedOrigin);
+  const missingPermissionResult = await sendExtensionMessage(panelPage, {
+    type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+    receiptId: missingPermissionReceipt.receiptId,
+  });
+  expect(missingPermissionResult).toMatchObject({
+    ok: false,
+    error: { code: "CONFIRMATION_PERMISSION_REQUIRED" },
+  });
+  expect((await readExtensionState(worker)).receiptIndex[0]?.siteConfirmationEvent).toBeNull();
+
+  await expect(panelPage.getByText("Accepted", { exact: true })).toHaveCount(0);
+  await expect(panelPage.getByText("Rejected", { exact: true })).toHaveCount(0);
+  expect(
+    observedHttpRequests.every(
+      (url) => url.startsWith(`${fixtureOrigin}/`) || url.startsWith(`${redirectedOrigin}/`),
+    ),
+  ).toBe(true);
+  expect(observedHttpRequests.some((url) => /monad|rpc|api\/demo/iu.test(url))).toBe(false);
   await context.close();
 });

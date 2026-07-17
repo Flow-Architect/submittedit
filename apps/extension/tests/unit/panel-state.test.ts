@@ -11,6 +11,19 @@ import { createInitialExtensionState } from "../../lib/storage-schema";
 
 const settings = createInitialExtensionState("2026-07-16T12:00:00.000Z").settings;
 
+const attemptedSummary = {
+  receiptId: `0x${"1".repeat(64)}` as const,
+  eventHash: `0x${"2".repeat(64)}` as const,
+  attemptedEventHash: `0x${"2".repeat(64)}` as const,
+  capturedAt: "2026-07-16T12:01:00.000Z",
+  origin: "https://example.com",
+  status: "ATTEMPTED" as const,
+  derivedStatus: "PENDING_ACCEPTANCE" as const,
+  siteConfirmedAt: null,
+  siteConfirmationSnippet: null,
+  siteConfirmationOrigin: null,
+};
+
 function snapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
   return {
     welcomeRequired: false,
@@ -18,6 +31,7 @@ function snapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
       kind: "supported",
       tabId: 5,
       origin: "https://example.com",
+      pageUrl: "https://example.com/form",
       permissionPattern: "https://example.com/*",
       permissionGranted: false,
       enabledAt: null,
@@ -25,6 +39,7 @@ function snapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
     settings,
     receiptIndexCount: 0,
     recentReceipts: [],
+    confirmationOpportunity: null,
     ...overrides,
   };
 }
@@ -44,6 +59,7 @@ describe("side-panel state model", () => {
             kind: "supported",
             tabId: 5,
             origin: "https://example.com",
+            pageUrl: "https://example.com/form",
             permissionPattern: "https://example.com/*",
             permissionGranted: true,
             enabledAt: "2026-07-16T12:00:00.000Z",
@@ -70,6 +86,7 @@ describe("side-panel state model", () => {
         kind: "supported",
         tabId: 5,
         origin: "https://example.com",
+        pageUrl: "https://example.com/form",
         permissionPattern: "https://example.com/*",
         permissionGranted: true,
         enabledAt: "2026-07-16T12:00:00.000Z",
@@ -101,22 +118,79 @@ describe("side-panel state model", () => {
         kind: "supported",
         tabId: 5,
         origin: "https://example.com",
+        pageUrl: "https://example.com/form",
         permissionPattern: "https://example.com/*",
         permissionGranted: true,
         enabledAt: "2026-07-16T12:00:00.000Z",
       },
       receiptIndexCount: 1,
-      recentReceipts: [
-        {
-          receiptId: `0x${"1".repeat(64)}`,
-          eventHash: `0x${"2".repeat(64)}`,
-          capturedAt: "2026-07-16T12:01:00.000Z",
-          origin: "https://example.com",
-          status: "ATTEMPTED",
-        },
-      ],
+      recentReceipts: [attemptedSummary],
     });
     expect(stateFromSnapshot(attempted)).toMatchObject({ kind: "attempted" });
+  });
+
+  it("derives navigation-ready, origin-warning, and Site confirmed states truthfully", () => {
+    const enabled = snapshot({
+      site: {
+        kind: "supported",
+        tabId: 5,
+        origin: "https://example.com",
+        pageUrl: "https://example.com/status",
+        permissionPattern: "https://example.com/*",
+        permissionGranted: true,
+        enabledAt: "2026-07-16T12:00:00.000Z",
+      },
+      receiptIndexCount: 1,
+      recentReceipts: [attemptedSummary],
+      confirmationOpportunity: {
+        kind: "READY",
+        receipt: attemptedSummary,
+        currentOrigin: "https://example.com",
+        expiresAt: "2026-07-16T12:31:00.000Z",
+        navigationSequence: 1,
+        originChanged: false,
+        originalOrigin: "https://example.com",
+        pageUrl: "https://example.com/status",
+      },
+    });
+    expect(stateFromSnapshot(enabled).kind).toBe("confirmation-available");
+
+    const redirected = {
+      ...enabled,
+      site: {
+        kind: "supported" as const,
+        tabId: 5,
+        origin: "https://redirect.example",
+        pageUrl: "https://redirect.example/status",
+        permissionPattern: "https://redirect.example/*",
+        permissionGranted: false,
+        enabledAt: null,
+      },
+      confirmationOpportunity: {
+        ...enabled.confirmationOpportunity!,
+        kind: "PERMISSION_REQUIRED" as const,
+        currentOrigin: "https://redirect.example",
+        originChanged: true,
+        pageUrl: "https://redirect.example/status",
+      },
+    };
+    expect(stateFromSnapshot(redirected).kind).toBe("confirmation-origin-warning");
+
+    const siteConfirmed = {
+      ...attemptedSummary,
+      eventHash: `0x${"3".repeat(64)}` as const,
+      status: "SITE_CONFIRMED" as const,
+      siteConfirmedAt: "2026-07-16T12:02:00.000Z",
+      siteConfirmationSnippet: "Transmission queued.",
+      siteConfirmationOrigin: "https://example.com",
+    };
+    expect(
+      stateFromSnapshot({
+        ...enabled,
+        confirmationOpportunity: null,
+        recentReceipts: [siteConfirmed],
+      }).kind,
+    ).toBe("site-confirmed");
   });
 
   it("turns a real denied permission result into a recoverable denied state", () => {

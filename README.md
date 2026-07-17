@@ -20,7 +20,7 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 08 integrity, deployment, fictional-portal, and
+The repository currently contains the Goal 09 integrity, deployment, fictional-portal, and
 privacy-first extension foundation: strict browser-safe receipt/event schemas, deterministic
 canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity
 registry deployed and source-verified on Monad Testnet, a reviewed deployment manifest, a generated
@@ -28,8 +28,10 @@ typed contract-client read boundary, fixed Node/Chromium vectors, the reviewed i
 dynamic PostgreSQL demo portal with durable queued, Accepted, Rejected, and Pending outcomes, and a
 real Manifest V3 side panel with exact-origin opt-in, runtime-only standard-form capture,
 canonical local Attempted receipts, narrow deduplication, persistence across navigation/restart,
-revocation, and versioned local settings. The fictional authority can produce real receipt-bound
-P-256 signatures for matching terminal event cores. Site-confirmation capture, extension signing,
+and deliberate website-confirmation capture. A confirmation is bound to the originating tab and
+Attempted event, requires selected visible text plus explicit review, creates one canonical linked
+`SITE_CONFIRMED` event, and remains **Pending acceptance**. The fictional authority can produce
+real receipt-bound P-256 signatures for matching terminal event cores. Extension signing,
 encryption, relay behavior, public verification, and production product workflows are not
 implemented yet.
 
@@ -59,7 +61,7 @@ The public manifest is [`deployments/monad-testnet.json`](deployments/monad-test
 
 ```text
 apps/web                 Next.js fictional filing portal, PostgreSQL APIs, and authority signer
-apps/extension           Exact-origin WXT Manifest V3 capture and local Attempted receipts
+apps/extension           Exact-origin WXT capture and local Attempted/Site confirmed evidence
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Generated registry ABI and strict anchor projection
 packages/ui              Shared identity metadata, CSS tokens, and brand assets
@@ -121,9 +123,10 @@ pnpm contract:abi:check
 linting, strict types, extension capture/storage/message/privacy boundaries, PostgreSQL web tests,
 all workspace builds and package exports, the generated extension manifest/output, real-Chromium
 receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the filing portal
-scenarios, real persistent-Chromium extension permission/capture/navigation/deduplication/restart
-checks, browser parity, web entry-point checks, and Next route type generation. A real PostgreSQL database is
-required for both commands. Install the bundled Chromium once with
+scenarios, real persistent-Chromium extension permission/capture/navigation/deduplication/restart,
+selected-confirmation review, origin-change, and durable event-linkage checks, browser parity, web
+entry-point checks, and Next route type generation. A real PostgreSQL database is required for
+both commands. Install the bundled Chromium once with
 `pnpm exec playwright install chromium`. See [the extension guide](docs/EXTENSION.md) and
 [the demo portal guide](docs/DEMO_PORTAL.md) for local setup and test details.
 Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a

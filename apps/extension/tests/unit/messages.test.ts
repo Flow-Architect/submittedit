@@ -27,6 +27,34 @@ describe("runtime message schema", () => {
       retentionPreference: "90-days",
       demoMode: true,
     },
+    {
+      type: "BEGIN_SITE_CONFIRMATION_REVIEW",
+      receiptId: `0x${"1".repeat(64)}`,
+    },
+    {
+      type: "CANCEL_SITE_CONFIRMATION_REVIEW",
+      receiptId: `0x${"1".repeat(64)}`,
+      reviewId: "R".repeat(43),
+    },
+    {
+      type: "SAVE_SITE_CONFIRMATION",
+      confirmOriginChange: false,
+      evidenceType: "CONFIRMATION_PAGE",
+      message: "Request queued for review.",
+      receiptId: `0x${"1".repeat(64)}`,
+      reference: "SYNTHETIC-123",
+      reviewId: "R".repeat(43),
+      saveId: "S".repeat(43),
+    },
+    {
+      type: "PAGE_CONTEXT_OBSERVED",
+      documentInstanceId: "D".repeat(43),
+      kind: "DOCUMENT",
+      observationId: "O".repeat(43),
+      observedAt: "2026-07-16T16:00:01.000Z",
+      origin: "https://example.com",
+      pageUrl: "https://example.com/status",
+    },
   ])("accepts a narrow valid message: %#", (message) => {
     expect(parseRuntimeRequest(message)).toEqual(message);
   });
@@ -90,9 +118,14 @@ describe("runtime message schema", () => {
       receipt: {
         receiptId: `0x${"1".repeat(64)}`,
         eventHash: `0x${"2".repeat(64)}`,
+        attemptedEventHash: `0x${"2".repeat(64)}`,
         capturedAt: "2026-07-16T16:00:00.000Z",
         origin: "https://example.com",
         status: "ATTEMPTED",
+        derivedStatus: "PENDING_ACCEPTANCE",
+        siteConfirmedAt: null,
+        siteConfirmationSnippet: null,
+        siteConfirmationOrigin: null,
       },
       deduplicated: false,
     };

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { createStoredAttemptReceipt } from "../../lib/attempt-receipt";
+import { createSiteConfirmationEvent, siteConfirmationSnippet } from "../../lib/site-confirmation";
 import {
   addRevokedSite,
   appendAttemptReceipt,
+  appendSiteConfirmation,
+  activeReceiptForTab,
+  confirmationContextIsExpired,
   createInitialExtensionState,
   EXTENSION_STORAGE_KEY,
   resolveStoredExtensionState,
+  recordNavigationObservation,
   summarizeAttemptReceipt,
   validateExtensionState,
 } from "../../lib/storage-schema";
@@ -17,8 +22,8 @@ import {
 } from "../../lib/storage";
 import { syntheticCaptureRequest } from "./fixtures";
 
-const NOW = "2026-07-16T12:00:00.000Z";
-const LATER = "2026-07-16T12:01:00.000Z";
+const NOW = "2026-07-16T16:00:00.000Z";
+const LATER = "2026-07-16T16:01:00.000Z";
 
 class MemoryStorage implements LocalStorageArea {
   values: Record<string, unknown>;
@@ -41,10 +46,10 @@ class MemoryStorage implements LocalStorageArea {
 }
 
 describe("versioned extension storage", () => {
-  it("creates safe schema-v2 defaults", () => {
+  it("creates safe schema-v3 defaults", () => {
     const state = createInitialExtensionState(NOW);
     expect(state).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       hasSeenWelcome: false,
       settings: {
         reminderInterval: "off",
@@ -76,7 +81,7 @@ describe("versioned extension storage", () => {
     const resolved = resolveStoredExtensionState(versionOne, LATER);
     expect(resolved.kind).toBe("migrated");
     expect(resolved.state).toMatchObject({
-      schemaVersion: 2,
+      schemaVersion: 3,
       hasSeenWelcome: true,
       receiptIndex: [],
       migration: { sourceVersion: 1, migratedAt: LATER },
@@ -109,7 +114,7 @@ describe("versioned extension storage", () => {
   it("persists and restores a strict canonical Attempted receipt", async () => {
     const area = new MemoryStorage();
     const { state } = await loadExtensionState(area, NOW);
-    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
     const appended = appendAttemptReceipt(state, receipt);
     expect(appended.deduplicated).toBe(false);
     const saved = await saveExtensionState(area, appended.state, LATER);
@@ -124,7 +129,7 @@ describe("versioned extension storage", () => {
 
   it("deduplicates exact retries and rejects conflicting reuse", () => {
     const initial = createInitialExtensionState(NOW);
-    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
     const first = appendAttemptReceipt(initial, receipt);
     const retry = appendAttemptReceipt(first.state, receipt);
     expect(retry.deduplicated).toBe(true);
@@ -132,6 +137,7 @@ describe("versioned extension storage", () => {
 
     const conflict = createStoredAttemptReceipt(
       syntheticCaptureRequest({ receiptId: `0x${"2".repeat(64)}` }),
+      7,
     );
     expect(() => appendAttemptReceipt(first.state, conflict)).toThrow(
       /conflicting duplicate capture/u,
@@ -139,7 +145,7 @@ describe("versioned extension storage", () => {
   });
 
   it("stores otherwise identical later attempts independently", () => {
-    const firstReceipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const firstReceipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
     const secondReceipt = createStoredAttemptReceipt(
       syntheticCaptureRequest({
         attemptId: "C".repeat(43),
@@ -147,11 +153,144 @@ describe("versioned extension storage", () => {
         receiptNonce: "D".repeat(43),
         capturedAt: LATER,
       }),
+      7,
     );
     const first = appendAttemptReceipt(createInitialExtensionState(NOW), firstReceipt);
     const second = appendAttemptReceipt(first.state, secondReceipt);
     expect(second.state.receiptIndex).toHaveLength(2);
     expect(new Set(second.state.receiptIndex.map((receipt) => receipt.receiptId)).size).toBe(2);
+    expect(activeReceiptForTab(second.state, 7)?.receiptId).toBe(secondReceipt.receiptId);
+    expect(
+      second.state.receiptIndex.find((receipt) => receipt.receiptId === firstReceipt.receiptId)
+        ?.confirmationContext?.status,
+    ).toBe("SUPERSEDED");
+  });
+
+  it("migrates schema-v2 Attempted receipts without inventing a tab binding", () => {
+    const currentReceipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
+    const legacy = Object.fromEntries(
+      Object.entries(currentReceipt).filter(
+        ([key]) => key !== "confirmationContext" && key !== "siteConfirmationEvidence",
+      ),
+    );
+    const versionTwo = {
+      ...createInitialExtensionState(NOW),
+      schemaVersion: 2,
+      receiptIndex: [{ ...legacy, storageVersion: 1 }],
+    };
+    const resolved = resolveStoredExtensionState(versionTwo, LATER);
+    expect(resolved.kind).toBe("migrated");
+    expect(resolved.state.schemaVersion).toBe(3);
+    expect(resolved.state.migration).toEqual({ sourceVersion: 2, migratedAt: LATER });
+    expect(resolved.state.receiptIndex[0]).toMatchObject({
+      receiptId: currentReceipt.receiptId,
+      currentStage: "ATTEMPTED",
+      confirmationContext: null,
+      siteConfirmationEvent: null,
+    });
+  });
+
+  it("records one same-tab navigation sequence and rejects unrelated tabs", () => {
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
+    const initial = appendAttemptReceipt(createInitialExtensionState(NOW), receipt).state;
+    const observation = {
+      documentInstanceId: "F".repeat(43),
+      kind: "DOCUMENT" as const,
+      observationId: "G".repeat(43),
+      observedAt: LATER,
+      origin: "https://demo.example",
+      pageUrl: "https://demo.example/status/synthetic",
+    };
+    const unrelated = recordNavigationObservation(initial, 8, observation);
+    expect(unrelated.state).toBe(initial);
+    expect(unrelated.receipt).toBeNull();
+
+    const recorded = recordNavigationObservation(initial, 7, observation);
+    expect(recorded.deduplicated).toBe(false);
+    expect(recorded.receipt?.confirmationContext).toMatchObject({
+      sequence: 1,
+      currentPageUrl: "https://demo.example/status/synthetic",
+      documentInstanceId: "F".repeat(43),
+    });
+    const retry = recordNavigationObservation(recorded.state, 7, observation);
+    expect(retry.deduplicated).toBe(true);
+    expect(retry.receipt?.confirmationContext?.sequence).toBe(1);
+  });
+
+  it("persists exactly one linked SiteConfirmed event and keeps Pending acceptance", async () => {
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
+    const initial = appendAttemptReceipt(createInitialExtensionState(NOW), receipt).state;
+    const observed = recordNavigationObservation(initial, 7, {
+      documentInstanceId: "F".repeat(43),
+      kind: "DOCUMENT",
+      observationId: "G".repeat(43),
+      observedAt: LATER,
+      origin: "https://demo.example",
+      pageUrl: "https://demo.example/status/synthetic",
+    });
+    const event = createSiteConfirmationEvent(receipt.event, {
+      evidenceType: "CONFIRMATION_PAGE",
+      message: "Transmission queued. Queued is not accepted.",
+      occurredAt: "2026-07-16T16:01:02.000Z",
+      pageUrl: "https://demo.example/status/synthetic",
+      reference: "SYNTHETIC-123",
+    });
+    const evidence = {
+      displaySnippet: siteConfirmationSnippet(
+        "Transmission queued. Queued is not accepted.",
+        "SYNTHETIC-123",
+      ),
+      navigationSequence: 1,
+      originChangeConfirmed: false,
+      pageOrigin: "https://demo.example",
+      pageTitle: "Synthetic filing status",
+      pageUrl: "https://demo.example/status/synthetic",
+      saveId: "S".repeat(43),
+      savedAt: "2026-07-16T16:01:02.000Z",
+    };
+    const appended = appendSiteConfirmation(observed.state, {
+      receiptId: receipt.receiptId,
+      event,
+      evidence,
+    });
+    expect(appended.receipt).toMatchObject({
+      currentStage: "SITE_CONFIRMED",
+      derivedStatus: "PENDING_ACCEPTANCE",
+      confirmationContext: { status: "COMPLETED" },
+    });
+    expect(summarizeAttemptReceipt(appended.receipt)).toMatchObject({
+      eventHash: event.eventHash,
+      attemptedEventHash: receipt.event.eventHash,
+      status: "SITE_CONFIRMED",
+      derivedStatus: "PENDING_ACCEPTANCE",
+      siteConfirmationSnippet: "Transmission queued. Queued is not accepted.",
+    });
+    const retry = appendSiteConfirmation(appended.state, {
+      receiptId: receipt.receiptId,
+      event,
+      evidence,
+    });
+    expect(retry.deduplicated).toBe(true);
+    expect(() =>
+      appendSiteConfirmation(appended.state, {
+        receiptId: receipt.receiptId,
+        event,
+        evidence: { ...evidence, saveId: "T".repeat(43) },
+      }),
+    ).toThrow(/only one Site confirmed/u);
+
+    const area = new MemoryStorage();
+    await saveExtensionState(area, appended.state, "2026-07-16T16:01:03.000Z");
+    const reopened = await loadExtensionState(area, "2026-07-16T16:01:04.000Z");
+    expect(reopened.state.receiptIndex[0]).toEqual(appended.receipt);
+  });
+
+  it("enforces the bounded active confirmation window", () => {
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
+    const context = receipt.confirmationContext;
+    expect(context).not.toBeNull();
+    expect(confirmationContextIsExpired(context!, "2026-07-16T16:29:59.999Z")).toBe(false);
+    expect(confirmationContextIsExpired(context!, "2026-07-16T16:30:00.000Z")).toBe(true);
   });
 
   it.each([
@@ -175,7 +314,7 @@ describe("versioned extension storage", () => {
   });
 
   it("rejects future evidence or changed event data in stored Goal 08 records", () => {
-    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
     const state = {
       ...createInitialExtensionState(NOW),
       receiptIndex: [{ ...receipt, extensionSignature: { fake: true } }],
@@ -211,7 +350,7 @@ describe("versioned extension storage", () => {
   });
 
   it("delete-all clears receipts and only SubmittedIt-owned state", async () => {
-    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest());
+    const receipt = createStoredAttemptReceipt(syntheticCaptureRequest(), 7);
     const initial = appendAttemptReceipt(createInitialExtensionState(NOW), receipt).state;
     const area = new MemoryStorage({
       [EXTENSION_STORAGE_KEY]: initial,

@@ -88,6 +88,7 @@ export interface CaptureAttemptRequest {
   readonly attemptFingerprint: HashHex;
   readonly attemptId: string;
   readonly capturedAt: string;
+  readonly documentInstanceId: string;
   readonly fields: readonly RawFieldCandidate[];
   readonly form: CaptureFormDescriptor;
   readonly origin: string;
@@ -433,6 +434,7 @@ function canonicalCaptureInput(value: UnknownRecord): CaptureAttemptInput {
     actionOrigin,
     attemptId: parseOpaqueId(value.attemptId, "$.attemptId"),
     capturedAt: normalizeTimestamp(value.capturedAt, "$.capturedAt"),
+    documentInstanceId: parseOpaqueId(value.documentInstanceId, "$.documentInstanceId"),
     fields: value.fields.map((field, index) => parseRawFieldCandidate(field, `$.fields[${index}]`)),
     form,
     origin,
@@ -462,6 +464,7 @@ export function parseCaptureAttemptRequest(value: unknown): CaptureAttemptReques
         "attemptFingerprint",
         "attemptId",
         "capturedAt",
+        "documentInstanceId",
         "fields",
         "form",
         "origin",

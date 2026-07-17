@@ -7,6 +7,15 @@ import {
 } from "./capture";
 import { inspectNormalizedOrigin } from "./origin";
 import {
+  MAX_SITE_CONFIRMATION_MESSAGE_LENGTH,
+  MAX_SITE_CONFIRMATION_REFERENCE_LENGTH,
+  parsePageContextObservationRequest,
+  parseSiteConfirmationEvidenceType,
+  type PageContextObservationRequest,
+  type SaveSiteConfirmationInput,
+  type SiteConfirmationReview,
+} from "./site-confirmation";
+import {
   REMINDER_INTERVALS,
   RETENTION_PREFERENCES,
   type ExtensionSettings,
@@ -17,6 +26,7 @@ import {
 
 export const MAX_RUNTIME_MESSAGE_BYTES = 8 * 1024;
 const runtimeMessageEncoder = new TextEncoder();
+const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 export type SiteUnavailableReason =
   | "MALFORMED_URL"
@@ -32,6 +42,7 @@ export type SiteContext =
       kind: "supported";
       tabId: number;
       origin: string;
+      pageUrl: string;
       permissionPattern: string;
       permissionGranted: boolean;
       enabledAt: string | null;
@@ -56,6 +67,18 @@ export interface PanelSnapshot {
   settings: ExtensionSettings;
   receiptIndexCount: number;
   recentReceipts: LocalReceiptSummary[];
+  confirmationOpportunity: ConfirmationOpportunity | null;
+}
+
+export interface ConfirmationOpportunity {
+  readonly kind: "AWAITING_NAVIGATION" | "EXPIRED" | "PERMISSION_REQUIRED" | "READY";
+  readonly receipt: LocalReceiptSummary;
+  readonly currentOrigin: string;
+  readonly expiresAt: string;
+  readonly navigationSequence: number;
+  readonly originChanged: boolean;
+  readonly originalOrigin: string;
+  readonly pageUrl: string;
 }
 
 export const EXTENSION_ERROR_CODES = [
@@ -64,6 +87,14 @@ export const EXTENSION_ERROR_CODES = [
   "CAPTURE_PERSIST_FAILED",
   "CAPTURE_REJECTED",
   "CAPTURE_TOO_LARGE",
+  "CONFIRMATION_ALREADY_EXISTS",
+  "CONFIRMATION_CONTEXT_STALE",
+  "CONFIRMATION_ORIGIN_NOT_CONFIRMED",
+  "CONFIRMATION_PERMISSION_REQUIRED",
+  "CONFIRMATION_REDACTION_INVALID",
+  "CONFIRMATION_REVIEW_EXPIRED",
+  "CONFIRMATION_SAVE_FAILED",
+  "CONFIRMATION_SELECTION_MISSING",
   "FORM_SERIALIZATION_FAILED",
   "INTERNAL_ERROR",
   "MESSAGE_TIMEOUT",
@@ -76,6 +107,7 @@ export const EXTENSION_ERROR_CODES = [
   "STORAGE_READ_FAILED",
   "STORAGE_WRITE_FAILED",
   "TAB_NAVIGATED",
+  "UNRELATED_TAB",
   "UNSUPPORTED_PAGE",
 ] as const;
 
@@ -93,6 +125,11 @@ export type BackgroundResponse =
       snapshot: PanelSnapshot;
       probe?: PageProbeResult;
       capture?: {
+        deduplicated: boolean;
+        receipt: LocalReceiptSummary;
+      };
+      confirmationReview?: SiteConfirmationReview;
+      confirmation?: {
         deduplicated: boolean;
         receipt: LocalReceiptSummary;
       };
@@ -121,6 +158,14 @@ export type RuntimeRequest =
     }
   | { type: "CLEAR_REVOKED_SITES" }
   | { type: "DELETE_LOCAL_DATA" }
+  | { type: "BEGIN_SITE_CONFIRMATION_REVIEW"; receiptId: `0x${string}` }
+  | {
+      type: "CANCEL_SITE_CONFIRMATION_REVIEW";
+      receiptId: `0x${string}`;
+      reviewId: string;
+    }
+  | ({ type: "SAVE_SITE_CONFIRMATION" } & SaveSiteConfirmationInput)
+  | PageContextObservationRequest
   | CaptureAttemptRequest
   | CapturePageErrorRequest;
 
@@ -189,6 +234,11 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
   if (value.type === "CAPTURE_PAGE_ERROR") {
     return byteLength <= MAX_RUNTIME_MESSAGE_BYTES ? parseCapturePageErrorRequest(value) : null;
   }
+  if (value.type === "PAGE_CONTEXT_OBSERVED") {
+    return byteLength <= MAX_RUNTIME_MESSAGE_BYTES
+      ? parsePageContextObservationRequest(value)
+      : null;
+  }
   if (byteLength > MAX_RUNTIME_MESSAGE_BYTES) {
     return null;
   }
@@ -239,9 +289,129 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
         retentionPreference: value.retentionPreference as RetentionPreference,
         demoMode: value.demoMode,
       };
+    case "BEGIN_SITE_CONFIRMATION_REVIEW":
+      return hasOnlyKeys(value, ["type", "receiptId"]) && isHash(value.receiptId)
+        ? { type: "BEGIN_SITE_CONFIRMATION_REVIEW", receiptId: value.receiptId }
+        : null;
+    case "CANCEL_SITE_CONFIRMATION_REVIEW":
+      return hasOnlyKeys(value, ["type", "receiptId", "reviewId"]) &&
+        isHash(value.receiptId) &&
+        typeof value.reviewId === "string" &&
+        OPAQUE_ID_PATTERN.test(value.reviewId)
+        ? {
+            type: "CANCEL_SITE_CONFIRMATION_REVIEW",
+            receiptId: value.receiptId,
+            reviewId: value.reviewId,
+          }
+        : null;
+    case "SAVE_SITE_CONFIRMATION": {
+      if (
+        !hasOnlyKeys(value, [
+          "type",
+          "confirmOriginChange",
+          "evidenceType",
+          "message",
+          "receiptId",
+          "reference",
+          "reviewId",
+          "saveId",
+        ]) ||
+        typeof value.confirmOriginChange !== "boolean" ||
+        typeof value.message !== "string" ||
+        value.message.length === 0 ||
+        value.message.length > MAX_SITE_CONFIRMATION_MESSAGE_LENGTH ||
+        !isHash(value.receiptId) ||
+        (value.reference !== undefined &&
+          (typeof value.reference !== "string" ||
+            value.reference.length > MAX_SITE_CONFIRMATION_REFERENCE_LENGTH)) ||
+        typeof value.reviewId !== "string" ||
+        !OPAQUE_ID_PATTERN.test(value.reviewId) ||
+        typeof value.saveId !== "string" ||
+        !OPAQUE_ID_PATTERN.test(value.saveId)
+      ) {
+        return null;
+      }
+      try {
+        return {
+          type: "SAVE_SITE_CONFIRMATION",
+          confirmOriginChange: value.confirmOriginChange,
+          evidenceType: parseSiteConfirmationEvidenceType(value.evidenceType),
+          message: value.message,
+          receiptId: value.receiptId,
+          ...(value.reference === undefined ? {} : { reference: value.reference }),
+          reviewId: value.reviewId,
+          saveId: value.saveId,
+        };
+      } catch {
+        return null;
+      }
+    }
     default:
       return null;
   }
+}
+
+export function parseLocalReceiptSummary(value: unknown): LocalReceiptSummary | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      "receiptId",
+      "eventHash",
+      "attemptedEventHash",
+      "capturedAt",
+      "origin",
+      "status",
+      "derivedStatus",
+      "siteConfirmedAt",
+      "siteConfirmationSnippet",
+      "siteConfirmationOrigin",
+    ]) ||
+    !isHash(value.receiptId) ||
+    !isHash(value.eventHash) ||
+    !isHash(value.attemptedEventHash) ||
+    !isIsoTimestamp(value.capturedAt) ||
+    (value.status !== "ATTEMPTED" && value.status !== "SITE_CONFIRMED") ||
+    value.derivedStatus !== "PENDING_ACCEPTANCE"
+  ) {
+    return null;
+  }
+  const origin = inspectNormalizedOrigin(value.origin);
+  const confirmationOrigin =
+    value.siteConfirmationOrigin === null
+      ? null
+      : inspectNormalizedOrigin(value.siteConfirmationOrigin);
+  if (
+    !origin.ok ||
+    (confirmationOrigin !== null && !confirmationOrigin.ok) ||
+    (value.siteConfirmedAt !== null && !isIsoTimestamp(value.siteConfirmedAt)) ||
+    (value.siteConfirmationSnippet !== null &&
+      (typeof value.siteConfirmationSnippet !== "string" ||
+        value.siteConfirmationSnippet.length === 0 ||
+        value.siteConfirmationSnippet.length > 160)) ||
+    (value.status === "ATTEMPTED" &&
+      (value.eventHash !== value.attemptedEventHash ||
+        value.siteConfirmedAt !== null ||
+        value.siteConfirmationSnippet !== null ||
+        value.siteConfirmationOrigin !== null)) ||
+    (value.status === "SITE_CONFIRMED" &&
+      (value.siteConfirmedAt === null ||
+        value.siteConfirmationSnippet === null ||
+        value.siteConfirmationOrigin === null))
+  ) {
+    return null;
+  }
+  return {
+    receiptId: value.receiptId,
+    eventHash: value.eventHash,
+    attemptedEventHash: value.attemptedEventHash,
+    capturedAt: value.capturedAt,
+    origin: origin.origin,
+    status: value.status,
+    derivedStatus: "PENDING_ACCEPTANCE",
+    siteConfirmedAt: value.siteConfirmedAt,
+    siteConfirmationSnippet: value.siteConfirmationSnippet,
+    siteConfirmationOrigin: confirmationOrigin?.ok ? confirmationOrigin.origin : null,
+  };
 }
 
 export function parseCaptureActivityEvent(value: unknown): CaptureActivityEvent | null {
@@ -267,34 +437,18 @@ export function parseCaptureActivityEvent(value: unknown): CaptureActivityEvent 
     };
   }
   if (value.phase === "CAPTURED") {
+    const receipt = parseLocalReceiptSummary(value.receipt);
     if (
       !hasOnlyKeys(value, ["type", "phase", "receipt", "deduplicated"]) ||
       typeof value.deduplicated !== "boolean" ||
-      !isRecord(value.receipt) ||
-      !hasOnlyKeys(value.receipt, ["receiptId", "eventHash", "capturedAt", "origin", "status"])
-    ) {
-      return null;
-    }
-    const origin = inspectNormalizedOrigin(value.receipt.origin);
-    if (
-      !origin.ok ||
-      !isHash(value.receipt.receiptId) ||
-      !isHash(value.receipt.eventHash) ||
-      !isIsoTimestamp(value.receipt.capturedAt) ||
-      value.receipt.status !== "ATTEMPTED"
+      !receipt
     ) {
       return null;
     }
     return {
       type: "CAPTURE_ACTIVITY",
       phase: "CAPTURED",
-      receipt: {
-        receiptId: value.receipt.receiptId,
-        eventHash: value.receipt.eventHash,
-        capturedAt: value.receipt.capturedAt,
-        origin: origin.origin,
-        status: "ATTEMPTED",
-      },
+      receipt,
       deduplicated: value.deduplicated,
     };
   }

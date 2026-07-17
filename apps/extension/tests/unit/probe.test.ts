@@ -7,10 +7,11 @@ import {
   parseCapturePageStatus,
 } from "../../lib/probe";
 
-const enabledSite: SiteContext = {
+const enabledSite: Extract<SiteContext, { kind: "supported" }> = {
   kind: "supported",
   tabId: 8,
   origin: "https://example.com",
+  pageUrl: "https://example.com/form",
   permissionPattern: "https://example.com/*",
   permissionGranted: true,
   enabledAt: "2026-07-16T12:00:00.000Z",

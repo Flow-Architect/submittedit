@@ -2,9 +2,10 @@
 
 ## Current extension privacy boundary
 
-The SubmittedIt extension creates local Attempted receipts for explicitly enabled standard HTML
-forms. It has no telemetry, analytics, advertising SDK, account system, remote configuration,
-portal API call, relay call, or blockchain call.
+The SubmittedIt extension creates local Attempted receipts and optional user-approved Site
+confirmed evidence for explicitly enabled standard HTML forms. It has no telemetry, analytics,
+advertising SDK, account system, remote configuration, portal API call, relay call, or blockchain
+call.
 
 Before an exact site permission is granted, the extension uses only active-tab URL information
 needed to normalize and display the origin. After permission, a runtime-only capture script may
@@ -12,8 +13,13 @@ inspect supported form-control structure and, on a real submit event, serialize 
 native `FormData` successful controls.
 
 Ordinary submitted values are stored only in the current Chrome profile as part of the canonical
-Attempted event. They are not uploaded, logged, sent to the fictional authority, signed, encrypted,
-or written onchain in Goal 08.
+Attempted event. After an attempt, structural page-change reports contain only random document and
+observation IDs, time, kind, origin, and a URL without query or fragment. They do not contain text.
+Only after the user selects visible text and requests review does the content script return that
+selection, page title, and privacy-safe URL. The selection stays in a bounded worker-memory review
+for at most five minutes and is discarded on cancel or successful save. User-approved evidence is
+stored in the linked Site confirmed event. None of this evidence is uploaded, logged, sent to the
+fictional authority, signed, encrypted, or written onchain in Goal 09.
 
 ## What is captured
 
@@ -27,6 +33,16 @@ For a supported submit event, the local record may contain:
 - repeated values in submission order, including explicit empty strings and leading zeroes;
 - capture time and independent random receipt/attempt/nonce identifiers; and
 - the canonical Goal 03 ATTEMPTED event hash.
+
+For an explicitly approved website confirmation, the local record may additionally contain:
+
+- one canonical `SITE_CONFIRMED` event linked to the exact Attempted hash;
+- confirmation-page, inline-message, or redirect evidence type;
+- privacy-safe page URL, deletion-redacted selected message, and optional reference that appeared
+  in the selection;
+- page title, origin, save time, navigation sequence, origin-change approval, and a display snippet;
+  and
+- a 30-minute same-tab context with bounded structural navigation observations.
 
 Disabled controls and unchecked checkbox/radio controls are absent because native `FormData` omits
 them.
@@ -43,7 +59,8 @@ reapplies the receipt-core capture policy before storage. SubmittedIt does not p
 - file bytes or file metadata;
 - cookies, local/session storage, browser history, request headers, IP addresses, user agents, or
   fingerprints;
-- page text, screenshots, DOM snapshots, or confirmation-page content;
+- unselected page text, screenshots, DOM snapshots, HTML, style/computed-layout data, or automatic
+  confirmation-page content;
 - private keys, extension signing keys, receipt encryption keys, deployer-wallet data, or authority
   private keys; or
 - transaction hashes, block numbers, authority outcomes, or verifier results.
@@ -51,8 +68,9 @@ reapplies the receipt-core capture policy before storage. SubmittedIt does not p
 An excluded-field descriptor contains only a stable field ID, optional field name, control type,
 and exclusion reason. It cannot contain the excluded value.
 
-The side panel displays only local receipt summaries—shortened receipt ID, origin, capture time,
-and Attempted status—not captured field values.
+The side panel displays only local receipt summaries—shortened receipt ID, origin, event time,
+Attempted or Site confirmed status, and a bounded user-approved confirmation snippet—not captured
+form-field values or unselected page text.
 
 ## Optional site access
 
@@ -64,7 +82,10 @@ SubmittedIt:
 - requests access only after `Enable SubmittedIt on this site` is pressed;
 - registers the capture bundle only for currently enabled exact origins;
 - checks live Chrome permission and sender origin again before storing every attempt;
-- rejects navigation/origin mismatches and stale post-revocation messages;
+- binds confirmation to the same tab and exact Attempted hash, and rejects changed documents,
+  navigation sequences, origins, URLs, permissions, or stale post-revocation messages;
+- requires a separate exact-origin permission plus explicit relationship confirmation after a
+  cross-origin redirect;
 - disposes installed listeners and unregisters future injection on revocation; and
 - records the revoked origin and timestamp for local user visibility.
 
@@ -74,10 +95,10 @@ URLs, and malformed origins cannot be enabled.
 ## Local storage
 
 One Chrome `storage.local` key holds versioned settings, enabled/revoked origin metadata,
-onboarding/migration state, and up to 50 strict local Attempted records. Version 1 migrates to
-schema 2 without inventing receipts. Every load validates the complete structure, recomputes the
-event chain/hash, and rejects signatures, authority evidence, or chain metadata that Goal 08 did
-not create.
+onboarding/migration state, and up to 50 strict local Attempted/Site confirmed records. Goal 08
+schema 2 migrates to schema 3 without inventing a historical tab binding or confirmation event.
+Every load validates the complete structure, recomputes the one- or two-event chain/hash, and
+rejects signatures, authority evidence, or chain metadata that Goal 09 did not create.
 
 This storage is local to the current browser profile, but it is **not end-to-end encrypted**.
 Anyone with sufficient access to an unlocked browser profile or compromised device may read or
@@ -98,13 +119,13 @@ site storage, other extensions, or unrelated keys in the extension's own storage
 
 ## Network behavior
 
-Extension startup, permission reconciliation, capture, hashing, persistence, deduplication,
-settings, revocation, and delete-all require no external network request. A website's own form
-submission proceeds normally and may make its intended request; that website traffic is not an
-extension upload.
+Extension startup, permission reconciliation, attempt capture, structural navigation binding,
+selected-text review, hashing, persistence, deduplication, settings, revocation, and delete-all
+require no external network request. A website's own form submission and navigation proceed
+normally and may make intended requests; that website traffic is not an extension upload.
 
 The extension does not contact the fictional demo authority, a relay, an RPC endpoint, Monad, an
-analytics service, or any third party in Goal 08. Future encrypted relay and verification features
+analytics service, or any third party in Goal 09. Future encrypted relay and verification features
 require separate documented endpoint, retention, key, and cryptographic reviews.
 
 ## Browser and device limitations
@@ -124,8 +145,8 @@ receipt-core hashing, and revocation reduce risk but do not make a compromised b
 ## Fictional demo and real data
 
 The SubmittedIt Civic Filing Lab is fictional and not affiliated with the IRS, U.S. Treasury, any
-state, or any real authority. Its fields are intentionally synthetic, so Goal 08 capture is allowed
+state, or any real authority. Its fields are intentionally synthetic, so Goal 09 capture is allowed
 for values such as `Alex Example` and `alex@example.invalid`.
 
 Do not enter real tax, identity, banking, authentication, address, or filing information. The
-Goal 08 local store is not encrypted and is not designed for regulated or production personal data.
+Goal 09 local store is not encrypted and is not designed for regulated or production personal data.

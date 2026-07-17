@@ -1,9 +1,10 @@
 # SubmittedIt receipt protocol 1.0
 
 This document is the public type and behavior contract for `@submittedit/receipt-core`. It defines
-deterministic evidence structures only. The Goal 08 extension now uses these structures to create
-local Attempted events; encryption, key generation, real extension signing/signature verification,
-contract writes, relay APIs, and final product verification remain separate boundaries.
+deterministic evidence structures only. The Goal 09 extension uses these structures to create a
+local Attempted event and, after deliberate user review, at most one linked Site confirmed event;
+encryption, key generation, real extension signing/signature verification, contract writes, relay
+APIs, and final product verification remain separate boundaries.
 
 ## Protocol layers
 
@@ -83,6 +84,15 @@ interface SiteConfirmedEventCore extends EventCoreBase {
 ```
 
 This records what the website displayed. It cannot create Accepted or Rejected.
+
+The current browser flow does not infer this core from navigation or scrape a page automatically.
+It binds a bounded same-tab navigation context to the Attempted hash, asks the user to select
+visible text, permits only deletion-based redaction, and requires an explicit save. The reviewed
+message, optional visible reference, evidence type, privacy-safe URL, occurrence time, receipt ID,
+and exact previous hash affect the event hash. Page title, navigation sequence, origin-change
+approval, and a bounded display snippet are local operational metadata, not a second event-core
+format. The current flow supports confirmation page, inline message, and redirect evidence;
+download evidence remains a protocol value for later reviewed capture behavior.
 
 ### Authority accepted or rejected
 

@@ -221,7 +221,7 @@ describe("standard form capture", () => {
 
   it("creates one strict canonical ATTEMPTED event and real event hash", () => {
     const request = syntheticCaptureRequest();
-    const receipt = createStoredAttemptReceipt(request);
+    const receipt = createStoredAttemptReceipt(request, 7);
     const parsed = parseEventEnvelope(receipt.event);
 
     expect(parsed.core.stage).toBe("ATTEMPTED");

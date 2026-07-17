@@ -68,8 +68,20 @@ State resolution follows a strict precedence: Verification failed overrides the 
 
 - User need: resist treating a success-looking page as final acceptance.
 - Must show Site confirmed as a completed event and **Pending acceptance** as the dominant current warning.
-- Must show the captured confirmation evidence and name the missing authoritative acknowledgment.
+- Must show the user-approved confirmation snippet, its site origin and time, and name the missing authoritative acknowledgment.
 - Primary action: **Continue tracking**.
+
+### Website-evidence review
+
+- A later navigation or document change may offer review, but never creates evidence by itself.
+- The user first selects visible confirmation text and then chooses **Capture confirmation
+  evidence**.
+- Review shows the originating receipt, current origin, privacy-safe page URL, title, evidence type,
+  selected text, optional visible reference, and the resulting **Pending acceptance** status.
+- Redaction may delete characters only; added or rewritten claims fail closed.
+- A changed origin requires a separate Chrome permission and an explicit relationship checkbox.
+- **Save website confirmation** creates the event. **Cancel without saving** discards the ephemeral
+  review and leaves the Attempted receipt unchanged.
 
 ## Acceptance missing warning
 

@@ -1,4 +1,10 @@
-import type { ExtensionError, PageProbeResult, PanelSnapshot } from "./messages";
+import type {
+  ConfirmationOpportunity,
+  ExtensionError,
+  PageProbeResult,
+  PanelSnapshot,
+} from "./messages";
+import type { SiteConfirmationReview } from "./site-confirmation";
 import type { LocalReceiptSummary } from "./storage-schema";
 
 export type ReachablePanelState =
@@ -31,6 +37,40 @@ export type ReachablePanelState =
       probe?: PageProbeResult;
     }
   | {
+      kind: "confirmation-available";
+      snapshot: PanelSnapshot;
+      receipt: LocalReceiptSummary;
+      opportunity: ConfirmationOpportunity;
+    }
+  | {
+      kind: "confirmation-origin-warning";
+      snapshot: PanelSnapshot;
+      receipt: LocalReceiptSummary;
+      opportunity: ConfirmationOpportunity;
+    }
+  | {
+      kind: "selecting-confirmation";
+      snapshot: PanelSnapshot;
+      receipt: LocalReceiptSummary;
+      opportunity: ConfirmationOpportunity;
+    }
+  | {
+      kind: "confirmation-review";
+      snapshot: PanelSnapshot;
+      review: SiteConfirmationReview;
+    }
+  | {
+      kind: "site-confirmed";
+      snapshot: PanelSnapshot;
+      receipt: LocalReceiptSummary;
+    }
+  | {
+      kind: "confirmation-error";
+      snapshot: PanelSnapshot;
+      error: ExtensionError;
+      receipt: LocalReceiptSummary | null;
+    }
+  | {
       kind: "capture-error";
       snapshot: PanelSnapshot;
       error: ExtensionError;
@@ -49,7 +89,9 @@ function latestReceiptForSnapshot(snapshot: PanelSnapshot): LocalReceiptSummary 
     return undefined;
   }
   const siteOrigin = snapshot.site.origin;
-  return snapshot.recentReceipts.find((receipt) => receipt.origin === siteOrigin);
+  return snapshot.recentReceipts.find(
+    (receipt) => receipt.origin === siteOrigin || receipt.siteConfirmationOrigin === siteOrigin,
+  );
 }
 
 export function initialPanelState(): ReachablePanelState {
@@ -63,10 +105,30 @@ export function stateFromSnapshot(snapshot: PanelSnapshot): ReachablePanelState 
   if (snapshot.site.kind === "unavailable") {
     return { kind: "unavailable", snapshot };
   }
+  const opportunity = snapshot.confirmationOpportunity;
+  if (opportunity?.kind === "PERMISSION_REQUIRED") {
+    return {
+      kind: "confirmation-origin-warning",
+      snapshot,
+      receipt: opportunity.receipt,
+      opportunity,
+    };
+  }
   if (!snapshot.site.permissionGranted) {
     return { kind: "site-not-enabled", snapshot };
   }
   const latest = latestReceiptForSnapshot(snapshot);
+  if (latest?.status === "SITE_CONFIRMED") {
+    return { kind: "site-confirmed", snapshot, receipt: latest };
+  }
+  if (opportunity?.kind === "READY") {
+    return {
+      kind: "confirmation-available",
+      snapshot,
+      receipt: opportunity.receipt,
+      opportunity,
+    };
+  }
   if (latest) {
     return { kind: "attempted", snapshot, receipt: latest };
   }
@@ -78,6 +140,14 @@ export function stateFromProbe(
   probe: PageProbeResult,
 ): ReachablePanelState {
   const latest = latestReceiptForSnapshot(snapshot);
+  const derived = stateFromSnapshot(snapshot);
+  if (
+    derived.kind === "site-confirmed" ||
+    derived.kind === "confirmation-available" ||
+    derived.kind === "confirmation-origin-warning"
+  ) {
+    return derived;
+  }
   if (latest) {
     return { kind: "attempted", snapshot, receipt: latest, probe };
   }

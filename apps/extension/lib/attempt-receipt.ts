@@ -8,9 +8,13 @@ import {
   type LifecycleEventEnvelope,
 } from "@submittedit/receipt-core";
 import type { CaptureAttemptRequest } from "./capture";
+import { SITE_CONFIRMATION_CAPTURE_WINDOW_MS } from "./site-confirmation";
 import type { StoredAttemptReceipt } from "./storage-schema";
 
-export function createStoredAttemptReceipt(request: CaptureAttemptRequest): StoredAttemptReceipt {
+export function createStoredAttemptReceipt(
+  request: CaptureAttemptRequest,
+  tabId: number,
+): StoredAttemptReceipt {
   const policy = applyCapturePolicy(request.fields, {
     includeFileMetadata: false,
   });
@@ -39,6 +43,9 @@ export function createStoredAttemptReceipt(request: CaptureAttemptRequest): Stor
     readonly core: AttemptedEventCore;
   };
   validateEventChain([event]);
+  const expiresAt = new Date(
+    Date.parse(request.capturedAt) + SITE_CONFIRMATION_CAPTURE_WINDOW_MS,
+  ).toISOString();
 
   return {
     actionOrigin: request.actionOrigin,
@@ -47,6 +54,20 @@ export function createStoredAttemptReceipt(request: CaptureAttemptRequest): Stor
     authorityEvent: null,
     capturedAt: request.capturedAt,
     chainAnchor: null,
+    confirmationContext: {
+      status: "ACTIVE",
+      tabId,
+      attemptEventHash: event.eventHash,
+      documentInstanceId: request.documentInstanceId,
+      startedAt: request.capturedAt,
+      expiresAt,
+      originalOrigin: request.origin,
+      originalPageUrl: request.pageUrl,
+      currentOrigin: request.origin,
+      currentPageUrl: request.pageUrl,
+      sequence: 0,
+      observations: [],
+    },
     currentStage: "ATTEMPTED",
     derivedStatus: "PENDING_ACCEPTANCE",
     event,
@@ -56,6 +77,7 @@ export function createStoredAttemptReceipt(request: CaptureAttemptRequest): Stor
     receiptId: request.receiptId,
     receiptNonce: request.receiptNonce,
     siteConfirmationEvent: null,
-    storageVersion: 1,
+    siteConfirmationEvidence: null,
+    storageVersion: 2,
   };
 }
