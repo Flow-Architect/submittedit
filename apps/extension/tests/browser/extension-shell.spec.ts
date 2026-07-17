@@ -742,6 +742,29 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   await expect(panelPage.getByText("3", { exact: true })).toBeVisible();
   await panelPage.getByLabel("Reminder interval").selectOption("3-days");
   await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
+  await worker.evaluate(async (storageKey) => {
+    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+    const stored = await chromeApi.storage.local.get(storageKey);
+    const state = stored[storageKey] as BrowserPersistentExtensionState;
+    await chromeApi.storage.local.set({
+      [storageKey]: {
+        ...state,
+        settings: {
+          ...state.settings,
+          revokedSites: [
+            ...state.settings.revokedSites,
+            {
+              origin: "https://refresh-regression.example",
+              revokedAt: new Date().toISOString(),
+            },
+          ],
+        },
+        updatedAt: new Date().toISOString(),
+      },
+    });
+  }, extensionStorageKey);
+  await expect(panelPage.getByText("https://refresh-regression.example")).toBeVisible();
+  await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
   await panelPage.getByLabel("Local retention").selectOption("30-days");
   await expect(panelPage.getByLabel("Local retention")).toHaveValue("30-days");
   await panelPage.getByLabel("Demo mode").check();

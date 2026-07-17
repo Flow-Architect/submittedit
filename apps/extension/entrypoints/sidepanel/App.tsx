@@ -339,7 +339,7 @@ export function App() {
   const applySnapshot = useCallback(
     async (snapshot: PanelSnapshot, probeEnabledSite: boolean) => {
       setSettingsDraft((draft) =>
-        screen === "settings" && draft
+        draft
           ? draft
           : {
               reminderInterval: snapshot.settings.reminderInterval,
@@ -358,7 +358,7 @@ export function App() {
         await runProbe(snapshot);
       }
     },
-    [runProbe, screen],
+    [runProbe],
   );
 
   const refresh = useCallback(
