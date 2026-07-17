@@ -23,8 +23,13 @@ import {
   type ReminderInterval,
   type RetentionPreference,
 } from "./storage-schema";
+import type { PublicKeyDescriptor, ReceiptId } from "@submittedit/receipt-core";
 
 export const MAX_RUNTIME_MESSAGE_BYTES = 8 * 1024;
+export const MAX_PORTABLE_RECEIPT_BYTES = 1024 * 1024;
+export const MAX_PORTABLE_RECEIPT_MESSAGE_BYTES = MAX_PORTABLE_RECEIPT_BYTES + 4 * 1024;
+export const MAX_PASSPHRASE_BYTES = 1024;
+export const MIN_EXPORT_PASSPHRASE_CHARACTERS = 12;
 const runtimeMessageEncoder = new TextEncoder();
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
@@ -66,13 +71,37 @@ export interface PanelSnapshot {
   site: SiteContext;
   settings: ExtensionSettings;
   receiptIndexCount: number;
-  recentReceipts: LocalReceiptSummary[];
+  recentReceipts: PanelReceiptSummary[];
   confirmationOpportunity: ConfirmationOpportunity | null;
+  crypto: ExtensionCryptoSummary;
+}
+
+export interface ExtensionCryptoSummary {
+  readonly status: "NOT_INITIALIZED" | "READY";
+  readonly identityCreatedAt: string | null;
+  readonly identityFingerprint: string | null;
+  readonly publicKey: PublicKeyDescriptor | null;
+  readonly receiptEncryption: "AES-256-GCM";
+  readonly storage: "CHROME_INDEX_PLUS_INDEXED_DB_VAULT";
+}
+
+export interface ReceiptSecuritySummary {
+  readonly encrypted: true;
+  readonly encryptionAlgorithm: "AES-256-GCM";
+  readonly extensionKeyId: string;
+  readonly ownership: "IMPORTED" | "LOCAL";
+  readonly readOnly: boolean;
+  readonly signatureCount: 1 | 2;
+  readonly signaturesVerified: true;
+}
+
+export interface PanelReceiptSummary extends LocalReceiptSummary {
+  readonly security: ReceiptSecuritySummary;
 }
 
 export interface ConfirmationOpportunity {
   readonly kind: "AWAITING_NAVIGATION" | "EXPIRED" | "PERMISSION_REQUIRED" | "READY";
-  readonly receipt: LocalReceiptSummary;
+  readonly receipt: PanelReceiptSummary;
   readonly currentOrigin: string;
   readonly expiresAt: string;
   readonly navigationSequence: number;
@@ -96,6 +125,13 @@ export const EXTENSION_ERROR_CODES = [
   "CONFIRMATION_SAVE_FAILED",
   "CONFIRMATION_SELECTION_MISSING",
   "FORM_SERIALIZATION_FAILED",
+  "CRYPTO_READ_FAILED",
+  "CRYPTO_WRITE_FAILED",
+  "DELETE_FAILED",
+  "EXPORT_FAILED",
+  "IMPORT_DUPLICATE",
+  "IMPORT_FAILED",
+  "PASSPHRASE_MISMATCH",
   "INTERNAL_ERROR",
   "MESSAGE_TIMEOUT",
   "NO_ACTIVE_TAB",
@@ -126,13 +162,23 @@ export type BackgroundResponse =
       probe?: PageProbeResult;
       capture?: {
         deduplicated: boolean;
-        receipt: LocalReceiptSummary;
+        receipt: PanelReceiptSummary;
       };
       confirmationReview?: SiteConfirmationReview;
       confirmation?: {
         deduplicated: boolean;
-        receipt: LocalReceiptSummary;
+        receipt: PanelReceiptSummary;
       };
+      exportedReceipt?: {
+        filename: string;
+        packageText: string;
+        receiptId: ReceiptId;
+      };
+      importedReceipt?: {
+        receipt: PanelReceiptSummary;
+        replaced: boolean;
+      };
+      deletedReceiptId?: ReceiptId;
     }
   | {
       ok: false;
@@ -158,6 +204,19 @@ export type RuntimeRequest =
     }
   | { type: "CLEAR_REVOKED_SITES" }
   | { type: "DELETE_LOCAL_DATA" }
+  | { type: "DELETE_RECEIPT"; receiptId: ReceiptId }
+  | {
+      type: "EXPORT_RECEIPT";
+      receiptId: ReceiptId;
+      passphrase: string;
+      passphraseConfirmation: string;
+    }
+  | {
+      type: "IMPORT_RECEIPT";
+      packageText: string;
+      passphrase: string;
+      replaceDuplicate: boolean;
+    }
   | { type: "BEGIN_SITE_CONFIRMATION_REVIEW"; receiptId: `0x${string}` }
   | {
       type: "CANCEL_SITE_CONFIRMATION_REVIEW";
@@ -172,7 +231,7 @@ export type RuntimeRequest =
 export type CaptureActivityEvent =
   | {
       type: "CAPTURE_ACTIVITY";
-      phase: "CAPTURING";
+      phase: "CAPTURING" | "ENCRYPTING" | "SIGNING";
       origin: string;
       receiptId: string;
       capturedAt: string;
@@ -180,7 +239,7 @@ export type CaptureActivityEvent =
   | {
       type: "CAPTURE_ACTIVITY";
       phase: "CAPTURED";
-      receipt: LocalReceiptSummary;
+      receipt: PanelReceiptSummary;
       deduplicated: boolean;
     }
   | {
@@ -213,6 +272,14 @@ function isHash(value: unknown): value is `0x${string}` {
   return typeof value === "string" && /^0x[0-9a-f]{64}$/u.test(value);
 }
 
+function isBoundedPassphrase(value: unknown, minimumCharacters: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= minimumCharacters &&
+    runtimeMessageEncoder.encode(value).byteLength <= MAX_PASSPHRASE_BYTES
+  );
+}
+
 export function runtimeMessageByteLength(value: unknown): number | null {
   try {
     const serialized = JSON.stringify(value);
@@ -239,6 +306,24 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
       ? parsePageContextObservationRequest(value)
       : null;
   }
+  if (value.type === "IMPORT_RECEIPT") {
+    if (
+      byteLength > MAX_PORTABLE_RECEIPT_MESSAGE_BYTES ||
+      !hasOnlyKeys(value, ["type", "packageText", "passphrase", "replaceDuplicate"]) ||
+      typeof value.packageText !== "string" ||
+      runtimeMessageEncoder.encode(value.packageText).byteLength > MAX_PORTABLE_RECEIPT_BYTES ||
+      !isBoundedPassphrase(value.passphrase, 1) ||
+      typeof value.replaceDuplicate !== "boolean"
+    ) {
+      return null;
+    }
+    return {
+      type: "IMPORT_RECEIPT",
+      packageText: value.packageText,
+      passphrase: value.passphrase,
+      replaceDuplicate: value.replaceDuplicate,
+    };
+  }
   if (byteLength > MAX_RUNTIME_MESSAGE_BYTES) {
     return null;
   }
@@ -251,6 +336,22 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
     case "CLEAR_REVOKED_SITES":
     case "DELETE_LOCAL_DATA":
       return hasOnlyKeys(value, ["type"]) ? { type: value.type } : null;
+    case "DELETE_RECEIPT":
+      return hasOnlyKeys(value, ["type", "receiptId"]) && isHash(value.receiptId)
+        ? { type: "DELETE_RECEIPT", receiptId: value.receiptId }
+        : null;
+    case "EXPORT_RECEIPT":
+      return hasOnlyKeys(value, ["type", "receiptId", "passphrase", "passphraseConfirmation"]) &&
+        isHash(value.receiptId) &&
+        isBoundedPassphrase(value.passphrase, MIN_EXPORT_PASSPHRASE_CHARACTERS) &&
+        isBoundedPassphrase(value.passphraseConfirmation, MIN_EXPORT_PASSPHRASE_CHARACTERS)
+        ? {
+            type: "EXPORT_RECEIPT",
+            receiptId: value.receiptId,
+            passphrase: value.passphrase,
+            passphraseConfirmation: value.passphraseConfirmation,
+          }
+        : null;
     case "PERMISSION_RESULT": {
       if (
         !hasOnlyKeys(value, ["type", "tabId", "origin", "granted"]) ||
@@ -351,7 +452,7 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
   }
 }
 
-export function parseLocalReceiptSummary(value: unknown): LocalReceiptSummary | null {
+export function parseLocalReceiptSummary(value: unknown): PanelReceiptSummary | null {
   if (
     !isRecord(value) ||
     !hasOnlyKeys(value, [
@@ -365,13 +466,33 @@ export function parseLocalReceiptSummary(value: unknown): LocalReceiptSummary | 
       "siteConfirmedAt",
       "siteConfirmationSnippet",
       "siteConfirmationOrigin",
+      "security",
     ]) ||
     !isHash(value.receiptId) ||
     !isHash(value.eventHash) ||
     !isHash(value.attemptedEventHash) ||
     !isIsoTimestamp(value.capturedAt) ||
     (value.status !== "ATTEMPTED" && value.status !== "SITE_CONFIRMED") ||
-    value.derivedStatus !== "PENDING_ACCEPTANCE"
+    value.derivedStatus !== "PENDING_ACCEPTANCE" ||
+    !isRecord(value.security) ||
+    !hasOnlyKeys(value.security, [
+      "encrypted",
+      "encryptionAlgorithm",
+      "extensionKeyId",
+      "ownership",
+      "readOnly",
+      "signatureCount",
+      "signaturesVerified",
+    ]) ||
+    value.security.encrypted !== true ||
+    value.security.encryptionAlgorithm !== "AES-256-GCM" ||
+    typeof value.security.extensionKeyId !== "string" ||
+    !/^submittedit-extension-p256-[A-Za-z0-9_-]{24}$/u.test(value.security.extensionKeyId) ||
+    (value.security.ownership !== "LOCAL" && value.security.ownership !== "IMPORTED") ||
+    typeof value.security.readOnly !== "boolean" ||
+    value.security.readOnly !== (value.security.ownership === "IMPORTED") ||
+    (value.security.signatureCount !== 1 && value.security.signatureCount !== 2) ||
+    value.security.signaturesVerified !== true
   ) {
     return null;
   }
@@ -396,7 +517,8 @@ export function parseLocalReceiptSummary(value: unknown): LocalReceiptSummary | 
     (value.status === "SITE_CONFIRMED" &&
       (value.siteConfirmedAt === null ||
         value.siteConfirmationSnippet === null ||
-        value.siteConfirmationOrigin === null))
+        value.siteConfirmationOrigin === null)) ||
+    value.security.signatureCount !== (value.status === "SITE_CONFIRMED" ? 2 : 1)
   ) {
     return null;
   }
@@ -411,6 +533,15 @@ export function parseLocalReceiptSummary(value: unknown): LocalReceiptSummary | 
     siteConfirmedAt: value.siteConfirmedAt,
     siteConfirmationSnippet: value.siteConfirmationSnippet,
     siteConfirmationOrigin: confirmationOrigin?.ok ? confirmationOrigin.origin : null,
+    security: {
+      encrypted: true,
+      encryptionAlgorithm: "AES-256-GCM",
+      extensionKeyId: value.security.extensionKeyId,
+      ownership: value.security.ownership,
+      readOnly: value.security.readOnly,
+      signatureCount: value.security.signatureCount,
+      signaturesVerified: true,
+    },
   };
 }
 
@@ -418,7 +549,7 @@ export function parseCaptureActivityEvent(value: unknown): CaptureActivityEvent 
   if (!isRecord(value) || value.type !== "CAPTURE_ACTIVITY" || typeof value.phase !== "string") {
     return null;
   }
-  if (value.phase === "CAPTURING") {
+  if (value.phase === "CAPTURING" || value.phase === "SIGNING" || value.phase === "ENCRYPTING") {
     const origin = inspectNormalizedOrigin(value.origin);
     if (
       !hasOnlyKeys(value, ["type", "phase", "origin", "receiptId", "capturedAt"]) ||
@@ -430,7 +561,7 @@ export function parseCaptureActivityEvent(value: unknown): CaptureActivityEvent 
     }
     return {
       type: "CAPTURE_ACTIVITY",
-      phase: "CAPTURING",
+      phase: value.phase,
       origin: origin.origin,
       receiptId: value.receiptId,
       capturedAt: value.capturedAt,

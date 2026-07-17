@@ -3,6 +3,8 @@ import { browser } from "wxt/browser";
 import {
   type BackgroundResponse,
   type ExtensionError,
+  MAX_PORTABLE_RECEIPT_BYTES,
+  type PanelReceiptSummary,
   type PanelSnapshot,
   parseCaptureActivityEvent,
   type RuntimeRequest,
@@ -24,12 +26,12 @@ import {
   EXTENSION_STORAGE_KEY,
   REMINDER_INTERVALS,
   RETENTION_PREFERENCES,
-  type LocalReceiptSummary,
   type ReminderInterval,
   type RetentionPreference,
 } from "../../lib/storage-schema";
 
 const MESSAGE_TIMEOUT_MS = 5_000;
+const PORTABLE_MESSAGE_TIMEOUT_MS = 60_000;
 
 type PanelScreen = "site" | "settings";
 
@@ -47,6 +49,31 @@ interface ConfirmationDraft {
   saveId: string;
 }
 
+type ReceiptAction =
+  | {
+      kind: "DELETE";
+      receipt: PanelReceiptSummary;
+      busy: boolean;
+      notice: string;
+    }
+  | {
+      kind: "EXPORT";
+      receipt: PanelReceiptSummary;
+      passphrase: string;
+      passphraseConfirmation: string;
+      busy: boolean;
+      notice: string;
+    }
+  | {
+      kind: "IMPORT";
+      filename: string;
+      packageText: string;
+      passphrase: string;
+      replaceDuplicate: boolean;
+      busy: boolean;
+      notice: string;
+    };
+
 function errorState(error: ExtensionError, snapshot: PanelSnapshot | null): ReachablePanelState {
   return { kind: "error", error, snapshot };
 }
@@ -54,17 +81,22 @@ function errorState(error: ExtensionError, snapshot: PanelSnapshot | null): Reac
 async function sendRequest(request: RuntimeRequest): Promise<BackgroundResponse> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<BackgroundResponse>((resolve) => {
-    timeoutId = setTimeout(() => {
-      resolve({
-        ok: false,
-        error: {
-          code: "MESSAGE_TIMEOUT",
-          message:
-            "The SubmittedIt service worker did not respond. Reload the extension and try again.",
-          recoverable: true,
-        },
-      });
-    }, MESSAGE_TIMEOUT_MS);
+    timeoutId = setTimeout(
+      () => {
+        resolve({
+          ok: false,
+          error: {
+            code: "MESSAGE_TIMEOUT",
+            message:
+              "The SubmittedIt service worker did not respond. Reload the extension and try again.",
+            recoverable: true,
+          },
+        });
+      },
+      request.type === "EXPORT_RECEIPT" || request.type === "IMPORT_RECEIPT"
+        ? PORTABLE_MESSAGE_TIMEOUT_MS
+        : MESSAGE_TIMEOUT_MS,
+    );
   });
 
   try {
@@ -161,7 +193,15 @@ function SiteActions({
   );
 }
 
-function ReceiptSummary({ receipt }: { receipt: LocalReceiptSummary }) {
+function ReceiptSummary({
+  receipt,
+  onDelete,
+  onExport,
+}: {
+  receipt: PanelReceiptSummary;
+  onDelete: (receipt: PanelReceiptSummary) => void;
+  onExport: (receipt: PanelReceiptSummary) => void;
+}) {
   const siteConfirmed = receipt.status === "SITE_CONFIRMED";
   return (
     <li className="receipt-summary">
@@ -180,11 +220,35 @@ function ReceiptSummary({ receipt }: { receipt: LocalReceiptSummary }) {
         <q className="receipt-snippet">{receipt.siteConfirmationSnippet}</q>
       ) : null}
       <small>Pending acceptance</small>
+      <div className="receipt-security" aria-label="Receipt security">
+        <span>
+          ✓ {receipt.security.signatureCount} signature
+          {receipt.security.signatureCount === 1 ? "" : "s"} verified
+        </span>
+        <span>◆ AES-256-GCM encrypted</span>
+        {receipt.security.readOnly ? <span>Imported · read-only identity</span> : null}
+      </div>
+      <div className="receipt-actions">
+        <button className="button button-secondary" type="button" onClick={() => onExport(receipt)}>
+          Export encrypted copy
+        </button>
+        <button className="button button-danger" type="button" onClick={() => onDelete(receipt)}>
+          Delete receipt
+        </button>
+      </div>
     </li>
   );
 }
 
-function ReceiptHistory({ snapshot }: { snapshot: PanelSnapshot | null }) {
+function ReceiptHistory({
+  snapshot,
+  onDelete,
+  onExport,
+}: {
+  snapshot: PanelSnapshot | null;
+  onDelete: (receipt: PanelReceiptSummary) => void;
+  onExport: (receipt: PanelReceiptSummary) => void;
+}) {
   if (!snapshot?.recentReceipts.length) {
     return null;
   }
@@ -199,13 +263,39 @@ function ReceiptHistory({ snapshot }: { snapshot: PanelSnapshot | null }) {
       </div>
       <ul className="receipt-list">
         {snapshot.recentReceipts.map((receipt) => (
-          <ReceiptSummary key={receipt.receiptId} receipt={receipt} />
+          <ReceiptSummary
+            key={receipt.receiptId}
+            receipt={receipt}
+            onDelete={onDelete}
+            onExport={onExport}
+          />
         ))}
       </ul>
       <p className="fine-print">
-        Attempt and user-approved website evidence remain only in this Chrome profile. They are not
-        signed, encrypted, uploaded, or anchored onchain in this milestone.
+        Each event is signed by this installation and each private bundle is encrypted with its own
+        non-extractable local key. Nothing is uploaded or anchored onchain in this flow.
       </p>
+    </section>
+  );
+}
+
+function CryptoReadiness({ snapshot }: { snapshot: PanelSnapshot | null }) {
+  const ready = snapshot?.crypto.status === "READY";
+  return (
+    <section className="crypto-readiness" aria-label="Local cryptographic protection">
+      <div>
+        <strong>{ready ? "Crypto ready" : "Identity not initialized"}</strong>
+        <span>
+          {ready
+            ? "P-256 event signing · per-receipt AES-256-GCM encryption"
+            : "A new local identity will be created before the next receipt is saved."}
+        </span>
+      </div>
+      {snapshot?.crypto.identityFingerprint ? (
+        <code title={snapshot.crypto.identityFingerprint}>
+          {snapshot.crypto.identityFingerprint.slice(0, 22)}…
+        </code>
+      ) : null}
     </section>
   );
 }
@@ -218,6 +308,9 @@ export function App() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmationDraft, setConfirmationDraft] = useState<ConfirmationDraft | null>(null);
   const [confirmationNotice, setConfirmationNotice] = useState("");
+  const [receiptAction, setReceiptAction] = useState<ReceiptAction | null>(null);
+  const [vaultNotice, setVaultNotice] = useState("");
+  const importFileRef = useRef<HTMLInputElement>(null);
   const refreshEpoch = useRef(0);
 
   const runProbe = useCallback(async (snapshot: PanelSnapshot) => {
@@ -245,11 +338,15 @@ export function App() {
 
   const applySnapshot = useCallback(
     async (snapshot: PanelSnapshot, probeEnabledSite: boolean) => {
-      setSettingsDraft({
-        reminderInterval: snapshot.settings.reminderInterval,
-        retentionPreference: snapshot.settings.retentionPreference,
-        demoMode: snapshot.settings.demoMode,
-      });
+      setSettingsDraft((draft) =>
+        screen === "settings" && draft
+          ? draft
+          : {
+              reminderInterval: snapshot.settings.reminderInterval,
+              retentionPreference: snapshot.settings.retentionPreference,
+              demoMode: snapshot.settings.demoMode,
+            },
+      );
       const nextState = stateFromSnapshot(snapshot);
       setPanelState(nextState);
       if (
@@ -261,7 +358,7 @@ export function App() {
         await runProbe(snapshot);
       }
     },
-    [runProbe],
+    [runProbe, screen],
   );
 
   const refresh = useCallback(
@@ -321,13 +418,18 @@ export function App() {
         void refresh(false);
         return undefined;
       }
-      if (activity.phase === "CAPTURING") {
+      if (
+        activity.phase === "CAPTURING" ||
+        activity.phase === "SIGNING" ||
+        activity.phase === "ENCRYPTING"
+      ) {
         if (currentOrigin === activity.origin) {
           setPanelState({
             kind: "capturing",
             snapshot,
             receiptId: activity.receiptId,
             capturedAt: activity.capturedAt,
+            phase: activity.phase,
           });
         }
         return undefined;
@@ -359,6 +461,9 @@ export function App() {
           receipt: activity.receipt,
         });
         void refresh(false);
+        return undefined;
+      }
+      if (activity.phase !== "ERROR") {
         return undefined;
       }
       if (currentOrigin === activity.origin) {
@@ -512,6 +617,160 @@ export function App() {
     await applySnapshot(response.snapshot, false);
   };
 
+  const beginExport = (receipt: PanelReceiptSummary) => {
+    setVaultNotice("");
+    setReceiptAction({
+      kind: "EXPORT",
+      receipt,
+      passphrase: "",
+      passphraseConfirmation: "",
+      busy: false,
+      notice: "",
+    });
+  };
+
+  const exportEncryptedReceipt = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!receiptAction || receiptAction.kind !== "EXPORT" || receiptAction.busy) {
+      return;
+    }
+    if (receiptAction.passphrase !== receiptAction.passphraseConfirmation) {
+      setReceiptAction({ ...receiptAction, notice: "The passphrases do not match." });
+      return;
+    }
+    const currentAction = receiptAction;
+    setReceiptAction({ ...currentAction, busy: true, notice: "Encrypting portable copy…" });
+    const response = await sendRequest({
+      type: "EXPORT_RECEIPT",
+      receiptId: currentAction.receipt.receiptId,
+      passphrase: currentAction.passphrase,
+      passphraseConfirmation: currentAction.passphraseConfirmation,
+    });
+    if (!response.ok || !response.exportedReceipt) {
+      const message = response.ok
+        ? "SubmittedIt received an incomplete export response."
+        : response.error.message;
+      setReceiptAction({ ...currentAction, busy: false, notice: message });
+      return;
+    }
+    const blob = new Blob([response.exportedReceipt.packageText], {
+      type: "application/vnd.submittedit.receipt+json",
+    });
+    const objectUrl = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = objectUrl;
+    anchor.download = response.exportedReceipt.filename;
+    anchor.rel = "noopener";
+    anchor.click();
+    globalThis.setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
+    setReceiptAction(null);
+    setVaultNotice("Encrypted .submittedit export created. Keep its passphrase separately.");
+  };
+
+  const selectImportFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) {
+      return;
+    }
+    if (file.size > MAX_PORTABLE_RECEIPT_BYTES) {
+      setVaultNotice("That .submittedit file exceeds the 1 MiB import limit.");
+      return;
+    }
+    let packageText: string;
+    try {
+      packageText = await file.text();
+    } catch {
+      setVaultNotice("SubmittedIt could not read that local file.");
+      return;
+    }
+    if (new TextEncoder().encode(packageText).byteLength > MAX_PORTABLE_RECEIPT_BYTES) {
+      setVaultNotice("That .submittedit file exceeds the 1 MiB import limit.");
+      return;
+    }
+    setVaultNotice("");
+    setReceiptAction({
+      kind: "IMPORT",
+      filename: file.name,
+      packageText,
+      passphrase: "",
+      replaceDuplicate: false,
+      busy: false,
+      notice: "",
+    });
+  };
+
+  const importEncryptedReceipt = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!receiptAction || receiptAction.kind !== "IMPORT" || receiptAction.busy) {
+      return;
+    }
+    const currentAction = receiptAction;
+    setReceiptAction({ ...currentAction, busy: true, notice: "Decrypting and verifying…" });
+    const response = await sendRequest({
+      type: "IMPORT_RECEIPT",
+      packageText: currentAction.packageText,
+      passphrase: currentAction.passphrase,
+      replaceDuplicate: currentAction.replaceDuplicate,
+    });
+    if (!response.ok) {
+      if (response.error.code === "IMPORT_DUPLICATE") {
+        setReceiptAction({
+          ...currentAction,
+          replaceDuplicate: true,
+          busy: false,
+          notice: response.error.message,
+        });
+      } else {
+        setReceiptAction({
+          ...currentAction,
+          busy: false,
+          notice: response.error.message,
+        });
+      }
+      return;
+    }
+    if (!response.importedReceipt) {
+      setReceiptAction({
+        ...currentAction,
+        busy: false,
+        notice: "SubmittedIt received an incomplete import response.",
+      });
+      return;
+    }
+    setReceiptAction(null);
+    setVaultNotice(
+      response.importedReceipt.replaced
+        ? "The selected encrypted receipt copy was replaced after verification."
+        : "Encrypted receipt imported and verified.",
+    );
+    await applySnapshot(response.snapshot, false);
+  };
+
+  const beginDeleteReceipt = (receipt: PanelReceiptSummary) => {
+    setVaultNotice("");
+    setReceiptAction({ kind: "DELETE", receipt, busy: false, notice: "" });
+  };
+
+  const confirmDeleteReceipt = async () => {
+    if (!receiptAction || receiptAction.kind !== "DELETE" || receiptAction.busy) {
+      return;
+    }
+    const currentAction = receiptAction;
+    setReceiptAction({ ...currentAction, busy: true, notice: "Deleting ciphertext and key…" });
+    const response = await sendRequest({
+      type: "DELETE_RECEIPT",
+      receiptId: currentAction.receipt.receiptId,
+    });
+    if (!response.ok) {
+      setReceiptAction({ ...currentAction, busy: false, notice: response.error.message });
+      return;
+    }
+    setReceiptAction(null);
+    setVaultNotice("Encrypted receipt and its local decryption key deleted.");
+    await applySnapshot(response.snapshot, false);
+  };
+
   const beginConfirmationReview = async () => {
     if (panelState.kind !== "confirmation-available") {
       return;
@@ -633,6 +892,177 @@ export function App() {
     });
   };
 
+  const renderReceiptAction = () => {
+    if (!receiptAction) {
+      return null;
+    }
+    if (receiptAction.kind === "DELETE") {
+      return (
+        <div className="dialog-backdrop">
+          <section
+            className="receipt-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-receipt-heading"
+          >
+            <span className="eyebrow">Irreversible local deletion</span>
+            <h2 id="delete-receipt-heading">Delete this encrypted receipt?</h2>
+            <code>{shortReceiptId(receiptAction.receipt.receiptId)}</code>
+            <p>
+              This deletes the ciphertext and its non-extractable AES key from this Chrome profile.
+              Export first if you need a portable backup.
+            </p>
+            <p className="form-notice" role="status">
+              {receiptAction.notice}
+            </p>
+            <div className="confirm-actions">
+              <button
+                className="button button-danger"
+                type="button"
+                disabled={receiptAction.busy}
+                onClick={() => void confirmDeleteReceipt()}
+              >
+                Delete receipt and key
+              </button>
+              <button
+                className="button button-secondary"
+                type="button"
+                disabled={receiptAction.busy}
+                onClick={() => setReceiptAction(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
+        </div>
+      );
+    }
+    if (receiptAction.kind === "EXPORT") {
+      return (
+        <div className="dialog-backdrop">
+          <section
+            className="receipt-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="export-receipt-heading"
+          >
+            <span className="eyebrow">Encrypted portability</span>
+            <h2 id="export-receipt-heading">Export private receipt</h2>
+            <p>
+              The .submittedit file is encrypted with this passphrase. The installation signing key
+              and local AES key are never exported.
+            </p>
+            <form className="portable-form" onSubmit={exportEncryptedReceipt}>
+              <label>
+                Export passphrase
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={12}
+                  required
+                  value={receiptAction.passphrase}
+                  onChange={(event) =>
+                    setReceiptAction({ ...receiptAction, passphrase: event.target.value })
+                  }
+                />
+                <span>Use at least 12 characters and keep it separately from the file.</span>
+              </label>
+              <label>
+                Confirm passphrase
+                <input
+                  type="password"
+                  autoComplete="new-password"
+                  minLength={12}
+                  required
+                  value={receiptAction.passphraseConfirmation}
+                  onChange={(event) =>
+                    setReceiptAction({
+                      ...receiptAction,
+                      passphraseConfirmation: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <p className="form-notice" role="status">
+                {receiptAction.notice}
+              </p>
+              <div className="confirm-actions">
+                <button
+                  className="button button-primary"
+                  type="submit"
+                  disabled={receiptAction.busy}
+                >
+                  Create encrypted export
+                </button>
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  disabled={receiptAction.busy}
+                  onClick={() => setReceiptAction(null)}
+                >
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      );
+    }
+    return (
+      <div className="dialog-backdrop">
+        <section
+          className="receipt-dialog"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="import-receipt-heading"
+        >
+          <span className="eyebrow">Encrypted portability</span>
+          <h2 id="import-receipt-heading">Import private receipt</h2>
+          <p>
+            Decrypt and verify <strong>{receiptAction.filename}</strong>. The original public
+            signing identity is preserved; its private key is not part of the package.
+          </p>
+          <form className="portable-form" onSubmit={importEncryptedReceipt}>
+            <label>
+              Export passphrase
+              <input
+                type="password"
+                autoComplete="current-password"
+                required
+                value={receiptAction.passphrase}
+                onChange={(event) =>
+                  setReceiptAction({ ...receiptAction, passphrase: event.target.value })
+                }
+              />
+            </label>
+            {receiptAction.replaceDuplicate ? (
+              <div className="confirm-panel" role="alert">
+                <strong>Replace only the existing copy of this receipt?</strong>
+                <span>Other receipts and the installation identity are unchanged.</span>
+              </div>
+            ) : null}
+            <p className="form-notice" role="status">
+              {receiptAction.notice}
+            </p>
+            <div className="confirm-actions">
+              <button className="button button-primary" type="submit" disabled={receiptAction.busy}>
+                {receiptAction.replaceDuplicate ? "Replace encrypted copy" : "Decrypt and import"}
+              </button>
+              <button
+                className="button button-secondary"
+                type="button"
+                disabled={receiptAction.busy}
+                onClick={() => setReceiptAction(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        </section>
+      </div>
+    );
+  };
+
   const renderSiteState = () => {
     switch (panelState.kind) {
       case "loading":
@@ -743,7 +1173,7 @@ export function App() {
                   SubmittedIt detected {panelState.probe.unusuallySensitiveFieldCount} field
                   {panelState.probe.unusuallySensitiveFieldCount === 1 ? "" : "s"} whose structure
                   may contain sensitive information. Protected secrets are excluded, but ordinary
-                  captured values remain in local Chrome storage.
+                  captured values are signed and encrypted in this Chrome profile.
                 </span>
               </div>
             ) : (
@@ -762,20 +1192,33 @@ export function App() {
             />
           </section>
         );
-      case "capturing":
+      case "capturing": {
+        const label =
+          panelState.phase === "CAPTURING"
+            ? "Capture in progress"
+            : panelState.phase === "SIGNING"
+              ? "Signing receipt"
+              : "Encrypting receipt";
+        const heading =
+          panelState.phase === "CAPTURING"
+            ? "Recording this browser attempt"
+            : panelState.phase === "SIGNING"
+              ? "Signing canonical evidence"
+              : "Encrypting private receipt data";
         return (
           <section className="evidence-card" aria-live="assertive">
             <StateBadge symbol="…" tone="attention">
-              Capture in progress
+              {label}
             </StateBadge>
-            <h1>Recording this browser attempt</h1>
+            <h1>{heading}</h1>
             <p>
               The website’s submission is not blocked. SubmittedIt will not claim a receipt until
-              local persistence succeeds.
+              signing, authenticated encryption, and local persistence all succeed.
             </p>
             <code className="receipt-id">{shortReceiptId(panelState.receiptId)}</code>
           </section>
         );
+      }
       case "attempted": {
         const opportunity = panelState.snapshot.confirmationOpportunity;
         return (
@@ -1137,8 +1580,8 @@ export function App() {
               <span>A verified authoritative acknowledgment is still missing.</span>
             </div>
             <p className="fine-print">
-              This linked event is local, unsigned, and unencrypted. It was not uploaded or sent to
-              Monad.
+              This linked event is signed by this installation and encrypted locally. It was not
+              uploaded or sent to Monad.
             </p>
             <SiteActions
               onCheck={() => void refresh()}
@@ -1260,13 +1703,34 @@ export function App() {
       {screen === "site" ? (
         <>
           <SiteIdentity snapshot={currentSnapshot} />
+          <CryptoReadiness snapshot={currentSnapshot} />
           {renderSiteState()}
-          <ReceiptHistory snapshot={currentSnapshot} />
+          <section className="vault-toolbar" aria-label="Private receipt portability">
+            <div>
+              <strong>Private receipt vault</strong>
+              <span>Import a passphrase-encrypted .submittedit file from disk.</span>
+            </div>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => importFileRef.current?.click()}
+            >
+              Import encrypted receipt
+            </button>
+            <p className="form-notice" role="status">
+              {vaultNotice}
+            </p>
+          </section>
+          <ReceiptHistory
+            snapshot={currentSnapshot}
+            onDelete={beginDeleteReceipt}
+            onExport={beginExport}
+          />
           <aside className="privacy-note" aria-label="Privacy boundary">
-            <strong>Local-only browser evidence.</strong>
+            <strong>Signed and encrypted local browser evidence.</strong>
             <span>
-              Attempt and user-approved website evidence are not encrypted yet. No telemetry, portal
-              API call, signature, authority outcome, or blockchain transaction occurs in this flow.
+              Private values stay inside authenticated ciphertext. No telemetry, portal API call,
+              authority outcome, relay action, or blockchain transaction occurs in this flow.
             </span>
           </aside>
         </>
@@ -1283,16 +1747,17 @@ export function App() {
               Reminder interval
               <select
                 value={settingsDraft?.reminderInterval ?? "off"}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                  const reminderInterval = event.currentTarget.value as ReminderInterval;
                   setSettingsDraft((draft) =>
                     draft
                       ? {
                           ...draft,
-                          reminderInterval: event.target.value as ReminderInterval,
+                          reminderInterval,
                         }
                       : draft,
-                  )
-                }
+                  );
+                }}
               >
                 {REMINDER_INTERVALS.map((interval) => (
                   <option key={interval} value={interval}>
@@ -1307,16 +1772,17 @@ export function App() {
               Local retention
               <select
                 value={settingsDraft?.retentionPreference ?? "until-deleted"}
-                onChange={(event: ChangeEvent<HTMLSelectElement>) =>
+                onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+                  const retentionPreference = event.currentTarget.value as RetentionPreference;
                   setSettingsDraft((draft) =>
                     draft
                       ? {
                           ...draft,
-                          retentionPreference: event.target.value as RetentionPreference,
+                          retentionPreference,
                         }
                       : draft,
-                  )
-                }
+                  );
+                }}
               >
                 {RETENTION_PREFERENCES.map((preference) => (
                   <option key={preference} value={preference}>
@@ -1337,11 +1803,10 @@ export function App() {
               <input
                 type="checkbox"
                 checked={settingsDraft?.demoMode ?? false}
-                onChange={(event) =>
-                  setSettingsDraft((draft) =>
-                    draft ? { ...draft, demoMode: event.target.checked } : draft,
-                  )
-                }
+                onChange={(event) => {
+                  const demoMode = event.currentTarget.checked;
+                  setSettingsDraft((draft) => (draft ? { ...draft, demoMode } : draft));
+                }}
               />
             </label>
 
@@ -1361,6 +1826,17 @@ export function App() {
               </div>
               <strong className="count-badge">{snapshotForSettings?.receiptIndexCount ?? 0}</strong>
             </div>
+            <CryptoReadiness snapshot={snapshotForSettings} />
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => importFileRef.current?.click()}
+            >
+              Import encrypted receipt
+            </button>
+            <p className="form-notice" role="status">
+              {vaultNotice}
+            </p>
           </section>
 
           <section className="settings-section">
@@ -1397,8 +1873,9 @@ export function App() {
           <section className="settings-section danger-zone">
             <h2>Delete all local data</h2>
             <p>
-              Clears SubmittedIt settings, Attempted and SiteConfirmed evidence, enabled-site
-              metadata, and revoked-site history. Granted site access is removed.
+              Clears SubmittedIt settings, encrypted receipts, per-receipt AES keys, the P-256
+              installation signing identity, enabled-site metadata, and revoked-site history.
+              Granted site access is removed.
             </p>
             {!confirmDelete ? (
               <button
@@ -1410,7 +1887,11 @@ export function App() {
               </button>
             ) : (
               <div className="confirm-panel" role="alert">
-                <strong>Delete every local SubmittedIt receipt and preference?</strong>
+                <strong>Destroy every receipt, decryption key, and the signing identity?</strong>
+                <span>
+                  This cannot be undone. Existing exports remain readable only with their separate
+                  passphrases and retain the deleted identity’s public descriptor.
+                </span>
                 <div className="confirm-actions">
                   <button className="button button-danger" type="button" onClick={deleteLocalData}>
                     Yes, delete local data
@@ -1428,6 +1909,16 @@ export function App() {
           </section>
         </section>
       )}
+      <input
+        ref={importFileRef}
+        className="visually-hidden"
+        type="file"
+        accept=".submittedit,application/vnd.submittedit.receipt+json,application/json"
+        onChange={(event) => void selectImportFile(event)}
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+      {renderReceiptAction()}
     </main>
   );
 }

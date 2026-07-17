@@ -13,19 +13,22 @@ runtime-only, exact-origin standard-form listener; native FormData serialization
 Attempted events; durable local receipt records; narrow deduplication; and truthful Prepared,
 Capturing, Attempted, and failure states. Goal 09 adds bounded same-tab navigation binding,
 user-selected website evidence, deletion-only review, origin-change consent, and one durable
-canonical Site confirmed event that remains Pending acceptance. No extension signing, receipt
-encryption, relay, public verifier, or application-level live-chain workflow has been implemented.
+canonical Site confirmed event that remains Pending acceptance. Goal 10 adds a persistent
+non-extractable installation identity, Goal 03-compatible signatures for
+local events, per-receipt AES-GCM ciphertext, staged plaintext migration, passphrase-encrypted
+`.submittedit` export/import, and key-aware deletion. Encrypted upload, relay, public verifier, and
+application-level live-chain workflows remain unimplemented.
 
 ## Workspace boundaries
 
-| Path                       | Responsibility                                                                               | May depend on                               |
-| -------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `apps/web`                 | Fictional filing portal and authority APIs; future verifier and relay                        | shared packages                             |
-| `apps/extension`           | Manifest V3 side panel, exact-origin Attempted capture, and reviewed Site confirmed evidence | browser-safe shared packages                |
-| `packages/receipt-core`    | Canonical receipt schemas, event hashing, lifecycle and capture rules                        | `@noble/hashes`; browser-safe APIs only     |
-| `packages/contract-client` | Generated registry ABI/deployment metadata, stage mapping, and strict anchor projection      | `viem`; reviewed public deployment manifest |
-| `packages/ui`              | Shared brand metadata, semantic CSS tokens, and source vector assets                         | No application or receipt-domain dependency |
-| `contracts`                | Linked lifecycle registry, tests, guarded deploy and ABI tooling                             | dependency-free Solidity                    |
+| Path                       | Responsibility                                                                          | May depend on                               |
+| -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `apps/web`                 | Fictional filing portal and authority APIs; future verifier and relay                   | shared packages                             |
+| `apps/extension`           | Manifest V3 capture plus signed, encrypted private receipt storage and portable export  | browser-safe shared packages                |
+| `packages/receipt-core`    | Canonical receipt schemas, event hashing, lifecycle and capture rules                   | `@noble/hashes`; browser-safe APIs only     |
+| `packages/contract-client` | Generated registry ABI/deployment metadata, stage mapping, and strict anchor projection | `viem`; reviewed public deployment manifest |
+| `packages/ui`              | Shared brand metadata, semantic CSS tokens, and source vector assets                    | No application or receipt-domain dependency |
+| `contracts`                | Linked lifecycle registry, tests, guarded deploy and ABI tooling                        | dependency-free Solidity                    |
 
 Applications may consume shared packages. Shared packages must not import application code. `receipt-core` must remain usable in browser and Node runtimes. Contract source and reviewed public deployment metadata belong in Git; compiler output, Foundry cache/broadcasts, keys, and environment secrets do not.
 
@@ -33,13 +36,21 @@ Applications may consume shared packages. Shared packages must not import applic
 
 ### Local browser
 
-The current extension owns one validated `chrome.storage.local` record containing settings,
-minimal exact-origin metadata, revoked-origin history, migration metadata, and up to 50 local
-receipt records. Chrome's permission store—not enabled-origin metadata—is authoritative for site
-access. After permission, the runtime capture script can report form readiness and serialize only
-native FormData successful controls on a real submit event. Protected values are removed before
-the internal message; the service worker then applies the shared capture policy, creates the exact
-Goal 03 Attempted envelope/hash, and stores it.
+The current extension splits storage across one validated schema-4 `chrome.storage.local` record
+and an extension-origin IndexedDB crypto vault. Chrome storage contains settings, minimal
+exact-origin metadata, revoked-origin history, migration metadata, the public installation
+descriptor/fingerprint, and up to 50 minimal encrypted-receipt index entries. It contains no full
+receipt, captured value, confirmation snippet, private key, or AES key. IndexedDB stores the
+non-extractable P-256 signing `CryptoKey`, one non-extractable AES-256-GCM key per receipt, and the
+versioned ciphertext blobs. Chrome's permission store—not enabled-origin metadata—is authoritative
+for site access.
+
+After permission, the runtime capture script reports form readiness and serializes only native
+FormData successful controls on a real submit event. Protected values are removed before the
+internal message. The service worker then applies the shared capture policy, creates the exact Goal
+03 Attempted envelope/hash, recomputes and signs its extension payload with ECDSA P-256/SHA-256,
+verifies the P1363 signature, encrypts the full private bundle with a fresh per-receipt AES key and
+96-bit IV, and only then acknowledges durable capture.
 
 Each new attempt also starts a 30-minute same-tab confirmation context bound to its Attempted hash
 and random document instance. Structural document, DOM, history, and panel-reconciliation
@@ -48,9 +59,18 @@ review available. The content script reads visible selected text, title, and pri
 after the user requests review. A five-minute worker-only session supports deletion-only redaction,
 an optional reference that must be visible in the original selection, and explicit save. The
 service worker creates the exact Goal 03 Site confirmed envelope/hash, links it to the Attempted
-event, and persists it once. The status remains Pending acceptance. Future work will add local
-identity keys, signatures, encrypted receipt bundles, and retention enforcement. Goal 09 generates
-no keys, signatures, ciphertext, portal request, relay request, or Monad transaction.
+event, preserves the existing Attempted signature, signs/verifies the new event with the same
+identity, and atomically replaces the receipt ciphertext. The status remains Pending acceptance.
+Schema-3 plaintext receipts migrate copy-on-write only after their unchanged event cores, IDs,
+hashes, links, and timestamps are validated, signed, encrypted, and journaled durably. The current
+extension makes no portal, upload, relay, RPC, or Monad request.
+
+One-receipt export uses a confirmed passphrase, PBKDF2-SHA-256 with a fresh salt and fixed 600,000
+iteration work factor, and AES-256-GCM to create a versioned `.submittedit` package. Import
+authenticates, decrypts, validates, recomputes, and verifies before re-encrypting with a new local
+receipt key. A foreign public identity is preserved and read-only; its private key is never
+imported. Delete-one removes index/blob/key, while delete-all also destroys the installation
+identity. A fragment-only future-share helper exists, but no hosted blob or live link exists.
 
 ### Hosted services
 
@@ -84,9 +104,11 @@ The contract is permissionless: any address may submit a structurally valid anch
 - Vitest covers deterministic unit, cryptographic, migration, and PostgreSQL integration checks.
   Playwright verifies the real portal/API lifecycle over HTTP and reproduces receipt vectors from
   the built ESM package in real Chromium. The extension Playwright path loads the production
-  unpacked bundle in a persistent Chromium profile and exercises real FormData capture, navigation,
+  unpacked bundle in persistent Chromium profiles and exercises real FormData capture, navigation,
   restart, deduplication, resubmission, revocation, selected website evidence, SPA/redirect/history
-  binding, cross-origin consent, and local event recomputation.
+  binding, cross-origin consent, non-extractable CryptoKey persistence, P-256 signing, IndexedDB
+  AES-GCM ciphertext, plaintext-index absence, `.submittedit` export, wrong-passphrase failure,
+  clean-profile import, duplicate replacement, and key-aware deletion.
 - CI provisions a dedicated non-secret PostgreSQL service, applies migrations, repeats the root
   quality gate and browser scenarios, installs Playwright Chromium for the unpacked-extension
   persistent-context test, and runs Monad Foundry formatting/build/test commands in a separate job.
@@ -128,8 +150,10 @@ exact retries return the same envelope and conflicting cores are rejected. See
 The side panel, service worker, and isolated capture script communicate through closed,
 size-limited message unions. Ordinary panel messages remain limited to 8 KiB. Capture messages may
 reach 128 KiB but have strict keys, bounded fields/values, canonical URLs/origins, recomputed local
-fingerprints, and value-free protected candidates. Unknown types, extra fields, malformed origins,
-oversized requests, untrusted senders, permission loss, and page-origin mismatch fail closed.
+fingerprints, and value-free protected candidates. Portable-package messages have a separate 1 MiB
+file limit plus bounded envelope/passphrase overhead. Unknown types, extra fields, malformed
+origins, oversized requests, untrusted senders, permission loss, and page-origin mismatch fail
+closed.
 
 The page script listens to `submit` and `formdata` in the capture phase. It uses
 `FormData(form, submitter)`, maps only supported successful controls, strips passwords/tokens/files
@@ -138,15 +162,23 @@ same-form window reuses one random attempt identity for duplicate browser events
 worker serializes receipt writes and deduplicates the persisted attempt ID so message retries do not
 create a second record.
 
-The schema-v3 local state wraps storage-version-2 receipt records around exact Goal 03 event
-envelopes; it is not a second protocol format. Each new record stores independent random
-receipt/attempt/nonce/document identities, capture and origin metadata, the canonical Attempted
-event, a bounded confirmation context, and explicit null authority/signature/chain slots. A Goal 08
-schema-v2 Attempted record migrates intact but without inventing a tab binding, so only new attempts
-can add website evidence. Every load recomputes the one- or two-event chain and rejects malformed,
-tampered, signed, authority, or anchored fields the current extension did not create. Earlier empty
-schemas still migrate safely. Delete-all touches only the SubmittedIt key after removing granted
-HTTP/HTTPS origins and runtime registration.
+The schema-3 operational record wraps exact Goal 03 event envelopes; it is not a second protocol
+format. Each new record carries independent random receipt/attempt/nonce/document identities,
+capture and origin metadata, the canonical Attempted event, and a bounded confirmation context.
+Goal 10 projects that validated record into a `SUBMITTEDIT_PRIVATE_RECEIPT` bundle containing a
+strict protocol `Receipt` whose locally owned events have verified extension signatures. Authority
+and chain-anchor slots remain absent. A legacy schema-2 Attempted record migrates intact without an
+invented historical tab binding; the schema-3-to-secure-schema-4 migration preserves every event
+core/hash/time and signs only protocol-compatible events.
+
+The persistent schema-4 Chrome record is a public/minimal index. Receipt bundles are canonicalized
+and encrypted into versioned `SUBMITTEDIT_ENCRYPTED_RECEIPT` envelopes in IndexedDB. Authenticated
+metadata binds format/version, AES-256-GCM, blob/receipt/public-key identity, receipt schema, and key
+version. The separate IndexedDB object stores hold the non-extractable installation key,
+non-extractable per-receipt AES keys, ciphertext blobs, and a versioned migration journal. Copy-on-
+write staging prevents plaintext removal before every encrypted artifact is durable. Secure-state
+parse, key lookup, AES authentication, event hash/link, or signature failure leaves data unchanged
+and fails closed.
 
 At most one confirmation context is active per tab; a later intentional attempt supersedes the
 older context without deleting its Attempted evidence. Closing the tab expires the active context.
@@ -157,16 +189,20 @@ the ephemeral selection session, and a save ID makes an exact retry idempotent w
 confirmed event is rejected.
 
 The service worker performs no polling and keeps no receipt truth solely in module globals. On
-startup, install, browser restart, permission changes, or panel bootstrap it reloads storage and
+startup, install, browser restart, permission changes, or panel bootstrap it restricts Chrome local
+storage to trusted extension contexts where supported, then reloads the index/vault and
 reconciles exact origins with `chrome.permissions`. The transient in-worker promise queue only
-serializes overlapping capture writes; persisted attempt IDs remain the dedupe source of truth
-across suspension/restart.
+serializes overlapping capture/navigation/crypto writes; persisted attempt IDs remain the dedupe
+source of truth across suspension/restart. Post-submit navigation observations await the capture
+persistence response so a faster SPA mutation cannot outrun its receipt.
 
-The panel's reachable states are Welcome, Site not enabled, Permission request in progress,
-Permission denied, Checking, No form, Prepared, Capturing, Attempted, confirmation available,
-origin warning, selection/review, Site confirmed, capture/confirmation failure, Unavailable, and
-Error. Site confirmed always displays Pending acceptance and the missing authoritative
-acknowledgment. Receipt pending, Chain anchoring, and Verified remain future test vocabulary only.
+The panel's reachable states include Welcome, Site not enabled, Permission request in progress,
+Permission denied, Checking, No form, Prepared, Capturing, Signing, Encrypting, Attempted,
+confirmation available, origin warning, selection/review, Site confirmed, encrypted receipt ready,
+export/import/duplicate replacement, per-receipt deletion, delete-all, cryptographic failure,
+Unavailable, and Error. Imported foreign-identity receipts are visibly read-only. Site confirmed
+always displays Pending acceptance and the missing authoritative acknowledgment. Receipt pending,
+Chain anchoring, and Verified remain future network/chain vocabulary only.
 See [the extension guide](EXTENSION.md) and [privacy boundary](PRIVACY.md).
 
 ## Monad safety boundary
@@ -181,13 +217,14 @@ The Goal 03 event core remains the evidence source of truth. `receipt-core` reco
 
 `contract-client` exports the verified chain/address/read configuration and deployment metadata generated from the manifest. It strictly accepts exactly those projection fields, validates their Monad Testnet and bytes32 encoding, preserves schema/chain/address metadata in the returned request, maps event stages to the fixed Solidity enum, and adds the established extension-key and applicable authority-key fingerprints. Prepared and Verification failed cannot become contract events. Key fingerprints are not signatures, and Goal 05 does not invent a production public-key derivation rule that Goal 03 did not define.
 
-The current extension creates a canonical Attempted event and may add one user-approved canonical
-Site confirmed event locally, but it does not sign, encrypt, relay, or anchor either event. Site
-confirmed remains Pending acceptance. Later extension work may request the Goal 06 fictional
-authority's signature only after constructing a matching terminal event core. A future relay will verify signed evidence
-before submitting its anchor request and will track confirmation without changing the event core.
-A future verifier will independently recompute event/signature checks, compare expected linkage
-and stage with confirmed contract state/logs, and account for chain confirmation. Goal 09 performs
-no Monad transaction. The contract alone cannot make Accepted or Rejected truthful; those displayed
-receipt outcomes additionally require a verified authority signature. See
+The current extension creates, signs, verifies, and encrypts a canonical Attempted event and may add
+one likewise signed/encrypted user-approved Site confirmed event locally. Site confirmed remains
+Pending acceptance. Export/import is local; no ciphertext is uploaded. Later extension work may
+request the Goal 06 fictional authority's signature only after constructing a matching terminal
+event core. A future relay will verify signed evidence before accepting ciphertext or submitting an
+anchor request and will track confirmation without changing the event core. A future verifier will
+independently recompute event/signature checks, compare expected linkage and stage with confirmed
+contract state/logs, and account for chain confirmation. Goal 10 performs no Monad transaction. The
+contract alone cannot make Accepted or Rejected truthful; those displayed receipt outcomes
+additionally require a verified authority signature. See
 [the contract reference](CONTRACT.md) and [threat model](THREAT_MODEL.md).

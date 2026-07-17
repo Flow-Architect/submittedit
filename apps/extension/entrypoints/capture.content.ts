@@ -263,22 +263,27 @@ export default defineContentScript({
     let attemptCapturedInDocument = false;
     let documentObservationSent = false;
     let domObservationSent = false;
+    let latestCapturePersistence: Promise<unknown> | null = null;
     let observer: MutationObserver | null = null;
 
     const sendObservation = (kind: PageContextObservationRequest["kind"]): void => {
-      try {
-        const message = createPageContextObservationRequest({
-          documentInstanceId,
-          kind,
-          observationId: randomOpaqueId(),
-          observedAt: new Date().toISOString(),
-          origin: location.origin,
-          pageUrl: privacySafePageUrl(location.href),
-        });
-        void browser.runtime.sendMessage(message).catch(() => undefined);
-      } catch {
-        // Structural navigation reporting never blocks the host page.
-      }
+      const precedingCapture = latestCapturePersistence;
+      void (async () => {
+        try {
+          await precedingCapture;
+          const message = createPageContextObservationRequest({
+            documentInstanceId,
+            kind,
+            observationId: randomOpaqueId(),
+            observedAt: new Date().toISOString(),
+            origin: location.origin,
+            pageUrl: privacySafePageUrl(location.href),
+          });
+          await browser.runtime.sendMessage(message);
+        } catch {
+          // Structural navigation reporting never blocks the host page.
+        }
+      })();
     };
 
     const reportDocument = (): void => {
@@ -357,7 +362,7 @@ export default defineContentScript({
           return;
         }
         attemptCapturedInDocument = true;
-        void browser.runtime.sendMessage(request).catch(() => undefined);
+        latestCapturePersistence = browser.runtime.sendMessage(request).catch(() => undefined);
       } catch {
         sendPageError("FORM_SERIALIZATION_FAILED");
       }

@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_PASSPHRASE_BYTES,
+  MAX_PORTABLE_RECEIPT_BYTES,
   MAX_RUNTIME_MESSAGE_BYTES,
   parseCaptureActivityEvent,
   parseRuntimeRequest,
@@ -15,6 +17,19 @@ describe("runtime message schema", () => {
     { type: "REVOKE_CURRENT_SITE" },
     { type: "CLEAR_REVOKED_SITES" },
     { type: "DELETE_LOCAL_DATA" },
+    { type: "DELETE_RECEIPT", receiptId: `0x${"1".repeat(64)}` },
+    {
+      type: "EXPORT_RECEIPT",
+      receiptId: `0x${"1".repeat(64)}`,
+      passphrase: "correct horse battery staple",
+      passphraseConfirmation: "correct horse battery staple",
+    },
+    {
+      type: "IMPORT_RECEIPT",
+      packageText: "{}",
+      passphrase: "correct horse battery staple",
+      replaceDuplicate: false,
+    },
     {
       type: "PERMISSION_RESULT",
       tabId: 7,
@@ -88,6 +103,18 @@ describe("runtime message schema", () => {
       retentionPreference: "90-days",
       demoMode: true,
     },
+    {
+      type: "EXPORT_RECEIPT",
+      receiptId: `0x${"1".repeat(64)}`,
+      passphrase: "short",
+      passphraseConfirmation: "short",
+    },
+    {
+      type: "IMPORT_RECEIPT",
+      packageText: "{}",
+      passphrase: "",
+      replaceDuplicate: false,
+    },
   ])("rejects malformed or expanded messages: %#", (message) => {
     expect(parseRuntimeRequest(message)).toBeNull();
   });
@@ -111,6 +138,25 @@ describe("runtime message schema", () => {
     expect(parseRuntimeRequest(message)).toBeNull();
   });
 
+  it("bounds portable receipt packages and passphrases by UTF-8 bytes", () => {
+    expect(
+      parseRuntimeRequest({
+        type: "IMPORT_RECEIPT",
+        packageText: "x".repeat(MAX_PORTABLE_RECEIPT_BYTES + 1),
+        passphrase: "synthetic passphrase 42",
+        replaceDuplicate: false,
+      }),
+    ).toBeNull();
+    expect(
+      parseRuntimeRequest({
+        type: "IMPORT_RECEIPT",
+        packageText: "{}",
+        passphrase: "🙂".repeat(Math.floor(MAX_PASSPHRASE_BYTES / 4) + 1),
+        replaceDuplicate: false,
+      }),
+    ).toBeNull();
+  });
+
   it("parses only strict panel capture activity", () => {
     const event = {
       type: "CAPTURE_ACTIVITY",
@@ -126,10 +172,34 @@ describe("runtime message schema", () => {
         siteConfirmedAt: null,
         siteConfirmationSnippet: null,
         siteConfirmationOrigin: null,
+        security: {
+          encrypted: true,
+          encryptionAlgorithm: "AES-256-GCM",
+          extensionKeyId: `submittedit-extension-p256-${"A".repeat(24)}`,
+          ownership: "LOCAL",
+          readOnly: false,
+          signatureCount: 1,
+          signaturesVerified: true,
+        },
       },
       deduplicated: false,
     };
     expect(parseCaptureActivityEvent(event)).toEqual(event);
+    expect(
+      parseCaptureActivityEvent({
+        type: "CAPTURE_ACTIVITY",
+        phase: "SIGNING",
+        origin: "https://example.com",
+        receiptId: `0x${"1".repeat(64)}`,
+        capturedAt: "2026-07-16T16:00:00.000Z",
+      }),
+    ).toEqual({
+      type: "CAPTURE_ACTIVITY",
+      phase: "SIGNING",
+      origin: "https://example.com",
+      receiptId: `0x${"1".repeat(64)}`,
+      capturedAt: "2026-07-16T16:00:00.000Z",
+    });
     expect(parseCaptureActivityEvent({ ...event, accepted: true })).toBeNull();
     expect(
       parseCaptureActivityEvent({

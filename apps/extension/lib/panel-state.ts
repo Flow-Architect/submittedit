@@ -29,6 +29,7 @@ export type ReachablePanelState =
       snapshot: PanelSnapshot;
       receiptId: string;
       capturedAt: string;
+      phase: "CAPTURING" | "ENCRYPTING" | "SIGNING";
     }
   | {
       kind: "attempted";

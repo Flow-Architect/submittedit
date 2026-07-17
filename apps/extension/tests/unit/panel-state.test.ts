@@ -22,6 +22,15 @@ const attemptedSummary = {
   siteConfirmedAt: null,
   siteConfirmationSnippet: null,
   siteConfirmationOrigin: null,
+  security: {
+    encrypted: true as const,
+    encryptionAlgorithm: "AES-256-GCM" as const,
+    extensionKeyId: `submittedit-extension-p256-${"A".repeat(24)}`,
+    ownership: "LOCAL" as const,
+    readOnly: false,
+    signatureCount: 1 as const,
+    signaturesVerified: true as const,
+  },
 };
 
 function snapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
@@ -40,6 +49,14 @@ function snapshot(overrides: Partial<PanelSnapshot> = {}): PanelSnapshot {
     receiptIndexCount: 0,
     recentReceipts: [],
     confirmationOpportunity: null,
+    crypto: {
+      status: "READY",
+      identityCreatedAt: "2026-07-16T12:00:00.000Z",
+      identityFingerprint: `sha256:${"A".repeat(43)}`,
+      publicKey: null,
+      receiptEncryption: "AES-256-GCM",
+      storage: "CHROME_INDEX_PLUS_INDEXED_DB_VAULT",
+    },
     ...overrides,
   };
 }
@@ -183,6 +200,7 @@ describe("side-panel state model", () => {
       siteConfirmedAt: "2026-07-16T12:02:00.000Z",
       siteConfirmationSnippet: "Transmission queued.",
       siteConfirmationOrigin: "https://example.com",
+      security: { ...attemptedSummary.security, signatureCount: 2 as const },
     };
     expect(
       stateFromSnapshot({

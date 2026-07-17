@@ -1,9 +1,13 @@
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
+  HASH_DOMAINS,
+  createDomainSeparatedPreimage,
+  createExtensionSignaturePayload,
   hashEventCore,
   validateEventChain,
   type AttemptedEventCore,
+  type Receipt,
   type SiteConfirmedEventCore,
 } from "../../../../packages/receipt-core/dist/index.js";
 import {
@@ -24,6 +28,39 @@ const redirectedOrigin = "http://localhost:4179";
 const redirectedPattern = `${redirectedOrigin}/*`;
 const productionExtensionPath = resolve(".output/chrome-mv3");
 const extensionStorageKey = "submittedit.localState";
+const cryptoVaultDatabaseName = "submittedit.crypto.v1";
+
+interface BrowserSecureIndexEntry {
+  blobId: string;
+  keyId: string;
+  receiptId: `0x${string}`;
+}
+
+interface BrowserPersistentExtensionState {
+  schemaVersion: 4;
+  hasSeenWelcome: boolean;
+  settings: BrowserExtensionState["settings"];
+  enabledOrigins: BrowserExtensionState["enabledOrigins"];
+  receiptIndex: BrowserSecureIndexEntry[];
+  identity: {
+    createdAt: string;
+    fingerprint: string;
+    publicKey: {
+      algorithm: "ECDSA_P256_SHA256";
+      encoding: "SPKI_BASE64URL";
+      keyId: string;
+      value: string;
+    };
+  } | null;
+}
+
+interface BrowserPrivateReceiptBundle {
+  format: "SUBMITTEDIT_PRIVATE_RECEIPT";
+  version: "1.0";
+  operational: StoredAttemptReceipt;
+  ownership: "IMPORTED" | "LOCAL";
+  receipt: Receipt;
+}
 
 interface BrowserExtensionState {
   schemaVersion: 3;
@@ -37,6 +74,8 @@ interface BrowserExtensionState {
   enabledOrigins: Record<string, { origin: string; enabledAt: string }>;
   receiptIndex: StoredAttemptReceipt[];
   recentReceipts?: LocalReceiptSummary[];
+  secureState: BrowserPersistentExtensionState;
+  bundles: BrowserPrivateReceiptBundle[];
 }
 
 interface ExtensionChrome {
@@ -124,11 +163,123 @@ async function containsOriginPermission(worker: Worker, pattern: string): Promis
 }
 
 async function readExtensionState(worker: Worker): Promise<BrowserExtensionState> {
-  const stored = await worker.evaluate(async (key) => {
-    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-    return chromeApi.storage.local.get(key);
-  }, extensionStorageKey);
-  const state = stored[extensionStorageKey];
+  const state = await worker.evaluate(
+    async ({ key, databaseName }) => {
+      const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+      const stored = await chromeApi.storage.local.get(key);
+      const persistent = stored[key] as BrowserPersistentExtensionState | undefined;
+      if (
+        !persistent ||
+        persistent.schemaVersion !== 4 ||
+        !Array.isArray(persistent.receiptIndex)
+      ) {
+        return null;
+      }
+      if (persistent.receiptIndex.length === 0) {
+        return {
+          ...persistent,
+          schemaVersion: 3 as const,
+          receiptIndex: [],
+          secureState: persistent,
+          bundles: [],
+        };
+      }
+
+      const requestResult = <T>(request: IDBRequest<T>) =>
+        new Promise<T>((resolveRequest, rejectRequest) => {
+          request.addEventListener("success", () => resolveRequest(request.result), { once: true });
+          request.addEventListener(
+            "error",
+            () => rejectRequest(request.error ?? new Error("IndexedDB request failed.")),
+            { once: true },
+          );
+        });
+      const database = await requestResult(indexedDB.open(databaseName, 1));
+      const canonicalize = (value: unknown): string => {
+        if (value === null || typeof value === "boolean" || typeof value === "string") {
+          return JSON.stringify(value);
+        }
+        if (typeof value === "number") {
+          if (!Number.isFinite(value)) {
+            throw new Error("Non-finite canonical number.");
+          }
+          return JSON.stringify(value);
+        }
+        if (Array.isArray(value)) {
+          return `[${value.map(canonicalize).join(",")}]`;
+        }
+        if (typeof value === "object") {
+          const record = value as Record<string, unknown>;
+          return `{${Object.keys(record)
+            .sort()
+            .map((field) => `${JSON.stringify(field)}:${canonicalize(record[field])}`)
+            .join(",")}}`;
+        }
+        throw new Error("Unsupported canonical value.");
+      };
+      const base64UrlBytes = (value: string) => {
+        const padded = value
+          .replaceAll("-", "+")
+          .replaceAll("_", "/")
+          .padEnd(Math.ceil(value.length / 4) * 4, "=");
+        return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+      };
+      try {
+        const bundles: BrowserPrivateReceiptBundle[] = [];
+        for (const entry of persistent.receiptIndex) {
+          const transaction = database.transaction(["keys", "blobs"], "readonly");
+          const keyRequest = transaction.objectStore("keys").get(entry.keyId);
+          const blobRequest = transaction.objectStore("blobs").get(entry.blobId);
+          const [keyRecord, blobRecord] = await Promise.all([
+            requestResult(keyRequest),
+            requestResult(blobRequest),
+          ]);
+          const localKey = (keyRecord as { key?: CryptoKey } | undefined)?.key;
+          const envelope = (
+            blobRecord as
+              | {
+                  envelope?: {
+                    authenticatedMetadata: unknown;
+                    ciphertext: string;
+                    iv: string;
+                  };
+                }
+              | undefined
+          )?.envelope;
+          if (!localKey || !envelope) {
+            throw new Error("Encrypted receipt artifacts are missing.");
+          }
+          const plaintext = await crypto.subtle.decrypt(
+            {
+              name: "AES-GCM",
+              iv: base64UrlBytes(envelope.iv),
+              additionalData: new TextEncoder().encode(
+                canonicalize(envelope.authenticatedMetadata),
+              ),
+              tagLength: 128,
+            },
+            localKey,
+            base64UrlBytes(envelope.ciphertext),
+          );
+          bundles.push(
+            JSON.parse(
+              new TextDecoder("utf-8", { fatal: true }).decode(plaintext),
+            ) as BrowserPrivateReceiptBundle,
+          );
+        }
+        return {
+          ...persistent,
+          schemaVersion: 3 as const,
+          receiptIndex: bundles.map((bundle) => bundle.operational),
+          secureState: persistent,
+          bundles,
+        };
+      } finally {
+        database.close();
+      }
+    },
+    { key: extensionStorageKey, databaseName: cryptoVaultDatabaseName },
+  );
   if (
     typeof state !== "object" ||
     state === null ||
@@ -140,7 +291,109 @@ async function readExtensionState(worker: Worker): Promise<BrowserExtensionState
   ) {
     throw new Error("Browser returned malformed SubmittedIt local state.");
   }
-  return state as unknown as BrowserExtensionState;
+  return state as BrowserExtensionState;
+}
+
+async function verifyBrowserReceiptSignatures(bundle: BrowserPrivateReceiptBundle): Promise<void> {
+  const descriptor = bundle.receipt.extensionPublicKey;
+  const publicKey = await crypto.subtle.importKey(
+    "spki",
+    Buffer.from(descriptor.value, "base64url"),
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["verify"],
+  );
+  for (const event of bundle.receipt.events) {
+    const signature = event.extensionSignature;
+    expect(signature).toBeDefined();
+    expect(signature).toMatchObject({
+      algorithm: "ECDSA_P256_SHA256",
+      encoding: "P1363_BASE64URL",
+      keyId: descriptor.keyId,
+      signer: "EXTENSION",
+    });
+    const verified = await crypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      publicKey,
+      Buffer.from(signature!.signature, "base64url"),
+      new TextEncoder().encode(
+        createDomainSeparatedPreimage(
+          HASH_DOMAINS.extensionSignature,
+          createExtensionSignaturePayload(event),
+        ),
+      ),
+    );
+    expect(verified).toBe(true);
+  }
+}
+
+async function inspectBrowserVault(worker: Worker): Promise<{
+  blobCount: number;
+  databasePresent: boolean;
+  identityPresent: boolean;
+  keyCount: number;
+  privateKeyExtractable: boolean | null;
+  privateKeyExported: boolean;
+}> {
+  return worker.evaluate(async (databaseName) => {
+    const databases = typeof indexedDB.databases === "function" ? await indexedDB.databases() : [];
+    const databasePresent = databases.some((database) => database.name === databaseName);
+    if (!databasePresent) {
+      return {
+        blobCount: 0,
+        databasePresent: false,
+        identityPresent: false,
+        keyCount: 0,
+        privateKeyExtractable: null,
+        privateKeyExported: false,
+      };
+    }
+    const result = <T>(request: IDBRequest<T>) =>
+      new Promise<T>((resolveRequest, rejectRequest) => {
+        request.addEventListener("success", () => resolveRequest(request.result), { once: true });
+        request.addEventListener(
+          "error",
+          () => rejectRequest(request.error ?? new Error("IndexedDB request failed.")),
+          { once: true },
+        );
+      });
+    const database = await result(indexedDB.open(databaseName, 1));
+    try {
+      const transaction = database.transaction(["identity", "keys", "blobs"], "readonly");
+      const [identity, keyCount, blobCount] = await Promise.all([
+        result(transaction.objectStore("identity").get("installation")),
+        result(transaction.objectStore("keys").count()),
+        result(transaction.objectStore("blobs").count()),
+      ]);
+      const privateKey = (identity as { privateKey?: CryptoKey } | undefined)?.privateKey;
+      let privateKeyExported = false;
+      if (privateKey) {
+        try {
+          await crypto.subtle.exportKey("pkcs8", privateKey);
+          privateKeyExported = true;
+        } catch {
+          privateKeyExported = false;
+        }
+      }
+      return {
+        blobCount,
+        databasePresent: true,
+        identityPresent: privateKey !== undefined,
+        keyCount,
+        privateKeyExtractable: privateKey?.extractable ?? null,
+        privateKeyExported,
+      };
+    } finally {
+      database.close();
+    }
+  }, cryptoVaultDatabaseName);
+}
+
+async function rawSubmittedItStorage(worker: Worker): Promise<string> {
+  return worker.evaluate(async (key) => {
+    const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+    return JSON.stringify((await chromeApi.storage.local.get(key))[key]);
+  }, extensionStorageKey);
 }
 
 async function preparePermissionBootstrapExtension(
@@ -233,7 +486,13 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   expect(extensionId).toMatch(/^[a-p]{32}$/u);
   expect(await containsFixturePermission(worker)).toBe(true);
   await expect
-    .poll(async () => (await readExtensionState(worker)).enabledOrigins[fixtureOrigin]?.origin)
+    .poll(async () => {
+      try {
+        return (await readExtensionState(worker)).enabledOrigins[fixtureOrigin]?.origin ?? null;
+      } catch {
+        return null;
+      }
+    })
     .toBe(fixtureOrigin);
   await context.close();
 
@@ -287,7 +546,29 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
         origin: fixtureOrigin,
       },
     },
+    secureState: {
+      schemaVersion: 4,
+      receiptIndex: [],
+      identity: {
+        publicKey: {
+          algorithm: "ECDSA_P256_SHA256",
+          encoding: "SPKI_BASE64URL",
+        },
+      },
+    },
   });
+  const originalIdentity = initialState.secureState.identity;
+  expect(originalIdentity?.fingerprint).toMatch(/^sha256:[A-Za-z0-9_-]{43}$/u);
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 0,
+      databasePresent: true,
+      identityPresent: true,
+      keyCount: 0,
+      privateKeyExtractable: false,
+      privateKeyExported: false,
+    });
 
   const formPage = await context.newPage();
   await formPage.goto(`${fixtureOrigin}/with-form`);
@@ -329,6 +610,7 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
 
   let capturedState = await readExtensionState(worker);
   const firstReceipt = capturedState.receiptIndex[0]!;
+  const firstBundle = capturedState.bundles[0]!;
   const firstCore = attemptedCore(capturedState, 0);
   expect(firstReceipt.receiptNonce).toMatch(/^[A-Za-z0-9_-]{43}$/u);
   expect(firstReceipt.event.eventHash).toBe(hashEventCore(firstCore));
@@ -345,6 +627,27 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
     extensionSignature: null,
     chainAnchor: null,
   });
+  expect(firstBundle).toMatchObject({
+    format: "SUBMITTEDIT_PRIVATE_RECEIPT",
+    ownership: "LOCAL",
+    receipt: {
+      receiptId: firstReceipt.receiptId,
+      currentStage: "ATTEMPTED",
+      extensionPublicKey: originalIdentity?.publicKey,
+    },
+  });
+  await verifyBrowserReceiptSignatures(firstBundle);
+  expect(await rawSubmittedItStorage(worker)).not.toContain("Alex Example");
+  expect(await rawSubmittedItStorage(worker)).not.toContain("capturedFields");
+  expect(await rawSubmittedItStorage(worker)).not.toContain("receiptNonce");
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 1,
+      keyCount: 1,
+      privateKeyExtractable: false,
+      privateKeyExported: false,
+    });
 
   const fieldsByName = new Map(firstCore.capturedFields.map((field) => [field.name, field]));
   expect(fieldsByName.get("displayName")).toMatchObject({ values: ["Alex Example"] });
@@ -438,8 +741,11 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   await expect(panelPage.getByRole("heading", { name: "Settings" })).toBeVisible();
   await expect(panelPage.getByText("3", { exact: true })).toBeVisible();
   await panelPage.getByLabel("Reminder interval").selectOption("3-days");
+  await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
   await panelPage.getByLabel("Local retention").selectOption("30-days");
+  await expect(panelPage.getByLabel("Local retention")).toHaveValue("30-days");
   await panelPage.getByLabel("Demo mode").check();
+  await expect(panelPage.getByLabel("Demo mode")).toBeChecked();
   await panelPage.getByRole("button", { name: "Save preferences" }).click();
   await expect(panelPage.getByText("Preferences saved locally.")).toBeVisible();
 
@@ -453,6 +759,10 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   expect(await containsFixturePermission(worker)).toBe(true);
   const restartedState = await readExtensionState(worker);
   expect(restartedState.receiptIndex).toHaveLength(3);
+  expect(restartedState.secureState.identity).toEqual(originalIdentity);
+  for (const bundle of restartedState.bundles) {
+    await verifyBrowserReceiptSignatures(bundle);
+  }
   expect(restartedState.settings).toMatchObject({
     reminderInterval: "3-days",
     retentionPreference: "30-days",
@@ -519,6 +829,18 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
     enabledOrigins: {},
     receiptIndex: [],
   });
+  expect(resetState.secureState).toMatchObject({
+    schemaVersion: 4,
+    identity: null,
+    receiptIndex: [],
+  });
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 0,
+      identityPresent: false,
+      keyCount: 0,
+    });
   const unrelatedStorage = await worker.evaluate(async () => {
     const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
     return chromeApi.storage.local.get("unrelated.test.value");
@@ -526,6 +848,35 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   expect(unrelatedStorage).toEqual({
     "unrelated.test.value": "preserve-me",
   });
+
+  await restartPanel.getByRole("button", { name: "Continue" }).click();
+  const regeneratedState = await readExtensionState(worker);
+  expect(regeneratedState.secureState.identity?.publicKey).not.toEqual(originalIdentity?.publicKey);
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 0,
+      identityPresent: true,
+      keyCount: 0,
+      privateKeyExtractable: false,
+      privateKeyExported: false,
+    });
+  await restartPanel.getByRole("button", { name: "Open settings" }).click();
+  await restartPanel.getByRole("button", { name: "Delete all local data" }).click();
+  await restartPanel.getByRole("button", { name: "Yes, delete local data" }).click();
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 0,
+      identityPresent: false,
+      keyCount: 0,
+    });
+  expect(
+    await worker.evaluate(async () => {
+      const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
+      return chromeApi.storage.local.get("unrelated.test.value");
+    }),
+  ).toEqual({ "unrelated.test.value": "preserve-me" });
 
   expect(panelConsoleErrors).toEqual([]);
   expect(runtimeErrors).toEqual([]);
@@ -568,7 +919,10 @@ test("site confirmation review creates one linked pending event and survives res
   await expect(
     panelPage.getByRole("button", { name: "Capture confirmation evidence" }),
   ).toBeVisible();
-  const attemptedReceipt = (await readExtensionState(worker)).receiptIndex[0]!;
+  const attemptedState = await readExtensionState(worker);
+  const attemptedReceipt = attemptedState.receiptIndex[0]!;
+  const attemptedSignature = attemptedState.bundles[0]?.receipt.events[0]?.extensionSignature;
+  expect(attemptedSignature).toBeDefined();
   expect(attemptedReceipt.siteConfirmationEvent).toBeNull();
 
   await formPage.locator("#mixed-confirmation").selectText();
@@ -649,6 +1003,7 @@ test("site confirmation review creates one linked pending event and survives res
     .toBe("SITE_CONFIRMED");
   const confirmedState = await readExtensionState(worker);
   const confirmedReceipt = confirmedState.receiptIndex[0]!;
+  const confirmedBundle = confirmedState.bundles[0]!;
   const siteCore = siteConfirmedCore(confirmedState, 0);
   expect(confirmedReceipt.siteConfirmationEvent?.eventHash).toBe(hashEventCore(siteCore));
   expect(siteCore.previousEventHash).toBe(confirmedReceipt.event.eventHash);
@@ -679,6 +1034,12 @@ test("site confirmation review creates one linked pending event and survives res
     extensionSignature: null,
     chainAnchor: null,
   });
+  expect(confirmedBundle.receipt.events).toHaveLength(2);
+  expect(confirmedBundle.receipt.events[0]?.extensionSignature).toEqual(attemptedSignature);
+  expect(confirmedBundle.receipt.events[1]?.extensionSignature).toBeDefined();
+  await verifyBrowserReceiptSignatures(confirmedBundle);
+  expect(await rawSubmittedItStorage(worker)).not.toContain(redactedMessage);
+  expect(await rawSubmittedItStorage(worker)).not.toContain("SYNTHETIC-123");
 
   const saveId = confirmedReceipt.siteConfirmationEvidence!.saveId;
   const retry = await sendExtensionMessage(panelPage, {
@@ -1012,5 +1373,152 @@ test("site confirmation navigation binding handles SPA, history, tabs, stale rec
     ),
   ).toBe(true);
   expect(observedHttpRequests.some((url) => /monad|rpc|api\/demo/iu.test(url))).toBe(false);
+  await context.close();
+});
+
+test("encrypted .submittedit export imports into a clean profile and supports explicit replacement and deletion", async ({}, testInfo) => {
+  const installed = await launchInstalledProductionExtension(testInfo, [fixturePattern]);
+  let { context, worker } = installed;
+  const sourcePage = await context.newPage();
+  await sourcePage.goto(`${fixtureOrigin}/with-form`);
+  const sourcePanel = await context.newPage();
+  await sourcePanel.goto(`chrome-extension://${installed.extensionId}/sidepanel.html`);
+  await sourcePage.bringToFront();
+  await sourcePanel.getByRole("button", { name: "Continue" }).click();
+  await expect(sourcePanel.getByText("Prepared", { exact: true })).toBeVisible();
+  await Promise.all([
+    sourcePage.waitForURL(`${fixtureOrigin}/submitted`),
+    sourcePage.getByRole("button", { name: "Submit synthetic fixture" }).click(),
+  ]);
+  await expect.poll(async () => (await readExtensionState(worker)).receiptIndex.length).toBe(1);
+  const sourceState = await readExtensionState(worker);
+  const sourceBundle = sourceState.bundles[0]!;
+  const sourcePublicKey = sourceBundle.receipt.extensionPublicKey;
+  await verifyBrowserReceiptSignatures(sourceBundle);
+
+  await sourcePanel.getByRole("button", { name: "Export encrypted copy" }).click();
+  await expect(sourcePanel.getByRole("heading", { name: "Export private receipt" })).toBeVisible();
+  await sourcePanel.getByLabel(/^Export passphrase/u).fill("synthetic passphrase 42");
+  await sourcePanel.getByLabel("Confirm passphrase").fill("synthetic passphrase 42");
+  const downloadPromise = sourcePanel.waitForEvent("download");
+  await sourcePanel.getByRole("button", { name: "Create encrypted export" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/^submittedit-[0-9a-f]{12}\.submittedit$/u);
+  const exportPath = testInfo.outputPath(download.suggestedFilename());
+  await download.saveAs(exportPath);
+  const packageText = await readFile(exportPath, "utf8");
+  expect(packageText).not.toContain("Alex Example");
+  expect(packageText).not.toContain("synthetic passphrase 42");
+  expect(packageText).not.toContain(sourcePublicKey.value);
+  const tamperedPackage = JSON.parse(packageText) as { ciphertext: string };
+  const tamperedCiphertext = Buffer.from(tamperedPackage.ciphertext, "base64url");
+  tamperedCiphertext[0] = (tamperedCiphertext[0] ?? 0) ^ 1;
+  tamperedPackage.ciphertext = tamperedCiphertext.toString("base64url");
+  const tamperedPackageText = JSON.stringify(tamperedPackage);
+
+  await sourcePanel.close();
+  await sourcePage.close();
+  await context.close();
+
+  const importProfile = testInfo.outputPath("clean-import-profile");
+  context = await launchExtensionContext(importProfile, installed.browserExtensionPath);
+  worker = await getServiceWorker(context);
+  const importExtensionId = worker.url().split("/")[2];
+  if (!importExtensionId) {
+    throw new Error("Chromium did not expose the clean-profile extension ID.");
+  }
+  const importPanel = await context.newPage();
+  await importPanel.goto(`chrome-extension://${importExtensionId}/sidepanel.html`);
+  const cleanState = await readExtensionState(worker);
+  expect(cleanState.receiptIndex).toEqual([]);
+  expect(cleanState.secureState.identity?.publicKey).not.toEqual(sourcePublicKey);
+
+  const choosePackage = async (contents = packageText, filename = download.suggestedFilename()) => {
+    const chooserPromise = importPanel.waitForEvent("filechooser");
+    await importPanel.getByRole("button", { name: "Import encrypted receipt" }).first().click();
+    const chooser = await chooserPromise;
+    await chooser.setFiles({
+      name: filename,
+      mimeType: "application/vnd.submittedit.receipt+json",
+      buffer: Buffer.from(contents),
+    });
+  };
+
+  await choosePackage();
+  await expect(importPanel.getByRole("heading", { name: "Import private receipt" })).toBeVisible();
+  await importPanel.getByLabel("Export passphrase", { exact: true }).fill("wrong passphrase 42");
+  await importPanel.getByRole("button", { name: "Decrypt and import" }).click();
+  await expect(importPanel.getByText(/could not decrypt and verify/u)).toBeVisible();
+  expect((await readExtensionState(worker)).receiptIndex).toHaveLength(0);
+
+  await importPanel.getByRole("button", { name: "Cancel" }).click();
+  await choosePackage(tamperedPackageText, "tampered-copy.submittedit");
+  await importPanel
+    .getByLabel("Export passphrase", { exact: true })
+    .fill("synthetic passphrase 42");
+  await importPanel.getByRole("button", { name: "Decrypt and import" }).click();
+  await expect(importPanel.getByText(/could not decrypt and verify/u)).toBeVisible();
+  expect((await readExtensionState(worker)).receiptIndex).toHaveLength(0);
+
+  await importPanel.getByRole("button", { name: "Cancel" }).click();
+  await choosePackage();
+  await importPanel
+    .getByLabel("Export passphrase", { exact: true })
+    .fill("synthetic passphrase 42");
+  await importPanel.getByRole("button", { name: "Decrypt and import" }).click();
+  await expect(importPanel.getByText("Encrypted receipt imported and verified.")).toBeVisible();
+  await expect(
+    importPanel.getByText("Imported · read-only identity", { exact: true }),
+  ).toBeVisible();
+  const importedState = await readExtensionState(worker);
+  expect(importedState.receiptIndex).toHaveLength(1);
+  expect(importedState.bundles[0]).toMatchObject({
+    ownership: "IMPORTED",
+    receipt: {
+      receiptId: sourceBundle.receipt.receiptId,
+      extensionPublicKey: sourcePublicKey,
+    },
+  });
+  await verifyBrowserReceiptSignatures(importedState.bundles[0]!);
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 1,
+      identityPresent: true,
+      keyCount: 1,
+      privateKeyExtractable: false,
+      privateKeyExported: false,
+    });
+
+  await choosePackage();
+  await importPanel
+    .getByLabel("Export passphrase", { exact: true })
+    .fill("synthetic passphrase 42");
+  await importPanel.getByRole("button", { name: "Decrypt and import" }).click();
+  await expect(importPanel.getByRole("button", { name: "Replace encrypted copy" })).toBeVisible();
+  await importPanel.getByRole("button", { name: "Replace encrypted copy" }).click();
+  await expect(
+    importPanel.getByText("The selected encrypted receipt copy was replaced after verification."),
+  ).toBeVisible();
+  expect((await readExtensionState(worker)).receiptIndex).toHaveLength(1);
+  await expect.poll(() => inspectBrowserVault(worker)).toMatchObject({ blobCount: 1, keyCount: 1 });
+
+  await importPanel.getByRole("button", { name: "Delete receipt" }).click();
+  await expect(
+    importPanel.getByRole("heading", { name: "Delete this encrypted receipt?" }),
+  ).toBeVisible();
+  await importPanel.getByRole("button", { name: "Delete receipt and key" }).click();
+  await expect(
+    importPanel.getByText("Encrypted receipt and its local decryption key deleted."),
+  ).toBeVisible();
+  expect((await readExtensionState(worker)).receiptIndex).toHaveLength(0);
+  await expect
+    .poll(() => inspectBrowserVault(worker))
+    .toMatchObject({
+      blobCount: 0,
+      identityPresent: true,
+      keyCount: 0,
+    });
+
   await context.close();
 });

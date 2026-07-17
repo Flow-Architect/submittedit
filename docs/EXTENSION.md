@@ -20,14 +20,23 @@ browser-observed evidence for explicitly enabled standard HTML form submissions.
   action;
 - permit deletion-only redaction and create one canonical linked `SITE_CONFIRMED` event after an
   explicit save;
+- create one persistent installation P-256 identity whose private key is non-extractable;
+- sign and verify every locally retained Attempted and Site confirmed event;
+- encrypt every complete private receipt bundle with a distinct local AES-256-GCM key;
+- export one receipt as a passphrase-encrypted `.submittedit` package and import it into a clean
+  profile without importing the original private signing key;
+- delete one receipt together with its ciphertext and key, or irreversibly delete all SubmittedIt
+  data and the installation identity;
 - deduplicate one physical attempt while allowing a later intentional submission;
 - revoke site access and stop accepting captures from that origin; and
 - delete all SubmittedIt-owned local data without clearing unrelated browser data.
 
 **Attempted means only that the browser observed a submission attempt. Site confirmed means only
-that the user reviewed evidence the website displayed. Neither means authority acceptance.** Goal
-09 does not generate extension signing keys, create signatures, encrypt receipts, call a relay,
-poll an authority, write to Monad, or expose a verifier.
+that the user reviewed evidence the website displayed. Neither means authority acceptance.**
+Signing proves that the same local installation signed the stored event; encryption protects the
+private bundle at rest from casual plaintext inspection. Neither proves site honesty, authority
+acceptance, legal timeliness, or an onchain record. The extension does not upload a blob, call a
+relay, poll an authority, write to Monad, or expose the final public verifier in this milestone.
 
 ## Build and install unpacked
 
@@ -68,7 +77,8 @@ Store listing in this milestone.
 9. On submit, it builds native `FormData(form, submitter)`, serializes the supported successful
    controls, creates random per-attempt identities, and sends one bounded internal capture request.
 10. The service worker rechecks permission and sender origin, validates the message, creates the
-    canonical event through `@submittedit/receipt-core`, and saves it before acknowledging success.
+    canonical event through `@submittedit/receipt-core`, recomputes and signs its payload, verifies
+    the signature, and encrypts the complete bundle before acknowledging success.
 11. The site submission is never canceled merely to make capture easier. If safe serialization or
     persistence fails, the panel says that no receipt was created.
 12. A successful attempt opens a 30-minute confirmation context for that tab. Later document,
@@ -192,60 +202,123 @@ event hash. Page title, navigation sequence, origin-change approval, save ID, an
 are local operational metadata. A retry with the same save ID returns the existing record; any
 different second Site confirmed event fails closed.
 
-## Local state
+## Installation identity and event signatures
 
-Chrome `storage.local` contains one SubmittedIt-owned key, `submittedit.localState`, with schema
-version 3. Goal 08 schema 2 receipts migrate without inventing confirmation bindings; version 1
-and version 0 settings also migrate to safe defaults.
+On first cryptographic use, the service worker creates one ECDSA P-256 key pair with Web Crypto.
+The private `CryptoKey` is non-extractable and is persisted by structured clone in the
+extension-origin IndexedDB database `submittedit.crypto.v1`. Only its public SPKI bytes are
+exported. The public descriptor uses the existing receipt protocol's
+`ECDSA_P256_SHA256`/`SPKI_BASE64URL` representation, a stable key ID, and a `sha256:` fingerprint.
+The public descriptor and fingerprint are safe index metadata; the private key never enters Chrome
+`storage.local`, a receipt export, a runtime response, a log, the web app, or Monad.
 
-| Field                        | Current content                                                          |
-| ---------------------------- | ------------------------------------------------------------------------ |
-| `schemaVersion`              | `3`                                                                      |
-| `initializedAt`, `updatedAt` | Canonical ISO timestamps                                                 |
-| `hasSeenWelcome`             | Local onboarding state                                                   |
-| `settings`                   | Reminder, retention, demo preference, and bounded revoked-origin history |
-| `enabledOrigins`             | Exact origin plus enable time; Chrome permission remains authoritative   |
-| `receiptIndex`               | Up to 50 strict local Attempted/Site confirmed records, newest first     |
-| `migration`                  | Immediate source schema and migration time when applicable               |
+Before storage, the worker strictly parses each event, recomputes its Keccak event hash, creates the
+existing domain-separated extension-signature payload, and signs that payload with ECDSA
+P-256/SHA-256. Chromium's signature is stored as 64-byte IEEE P1363 data encoded with base64url in
+the existing `SignatureEnvelope`. The signature remains outside the event core, so signing does not
+change the event hash. The worker immediately verifies the public descriptor, payload hash, and
+signature before accepting the bundle. Adding Site confirmed preserves the original Attempted core,
+hash, timestamp, and valid signature and signs the new linked event with the same identity.
 
-Each new Attempted record contains:
+The identity remains stable across navigation, panel/service-worker closure, browser restart, and
+extension reload while Chromium preserves extension data. There is no rotation flow. Delete-all
+destroys the private key and public identity record; this is irreversible. Old exported signatures
+remain verifiable through their embedded public descriptor, but the deleted installation cannot
+sign a new event as that identity. The next explicit extension state initialization that needs
+cryptography creates a different identity.
 
-- 256-bit random receipt ID, attempt ID, and receipt nonce;
-- local dedupe fingerprint;
-- capture time, exact origin, privacy-safe path hash, and action origin;
-- the exact Goal 03 `LifecycleEventEnvelope` with one `ATTEMPTED` core and canonical event hash;
-- `PENDING_ACCEPTANCE` as the conservative derived status;
-- a 30-minute confirmation context bound to the tab, Attempted hash, document instance, and bounded
-  navigation history; and
-- explicit null authority-evidence, extension-signature, and chain-anchor slots.
+## Encrypted local receipt vault
 
-After deliberate confirmation save, that record additionally contains the exact linked Goal 03
-`SITE_CONFIRMED` envelope and minimal local review metadata. It remains
-`PENDING_ACCEPTANCE`. Migrated Goal 08 records keep their Attempted evidence but have a null
-confirmation context because a trustworthy historical tab binding cannot be invented.
+Persistent local state is split deliberately:
 
-Those nulls do not claim that later evidence exists. The record contains no extension key,
-signature, encrypted bundle, transaction hash, block number, authority outcome, or verification
-result. A Site confirmed event is also unsigned and unanchored in Goal 09.
+- Chrome `storage.local` keeps the `submittedit.localState` schema-4 settings record, public
+  identity metadata, exact-origin metadata, and a minimal receipt index.
+- IndexedDB keeps the non-extractable installation signing key, one non-extractable random 256-bit
+  AES-GCM key per receipt, and one versioned ciphertext envelope per receipt.
+- The validated schema-3 operational receipt shape is reconstructed only in service-worker memory
+  after authenticated decryption; it is not the persistent plaintext source of truth.
 
-The complete record is strict-key validated and its event chain/hash are recomputed on every load.
-Malformed or tampered storage resets to a safe empty state rather than displaying a false receipt.
-Chrome local storage is profile-local but is not encrypted; see [privacy](PRIVACY.md).
+Each local encryption uses Web Crypto AES-GCM with a fresh random 96-bit IV. Canonical authenticated
+additional data binds the envelope format/version, algorithm, blob ID, receipt ID, receipt schema
+version, extension key ID, and encryption-key version. A random key ID in the index is only an
+IndexedDB locator, never AES key material. Complete form evidence, confirmation text/snippets,
+event envelopes, and local operational context remain inside ciphertext.
 
-`Delete all local data` removes granted SubmittedIt site permissions, runtime capture registration,
-settings, receipts, and SubmittedIt metadata. It preserves unrelated extension and browser data.
+The plaintext schema-4 index contains at most 50 entries and only:
+
+| Index data                                         | Purpose                                                 |
+| -------------------------------------------------- | ------------------------------------------------------- |
+| receipt/blob/key locators and envelope version     | Find the correct ciphertext and local key               |
+| receipt ID and extension public-key ID             | Bind the encrypted artifact to public identity metadata |
+| origin, capture/site-confirmation times, and stage | Render truthful minimal receipt navigation              |
+| `PENDING_ACCEPTANCE` and `LOCAL`/`IMPORTED`        | Prevent optimistic state and identify read-only imports |
+
+It contains no captured values, full form descriptor, confirmation message or snippet, private
+key, AES key, signature bytes, authority result, transaction hash, or block number. Chromium
+storage access is restricted to trusted extension contexts where supported before state is read or
+migrated. The side panel asks the worker for a snapshot; the worker authenticates, decrypts,
+strictly validates, and then discards its temporary bundle map after the request completes. Neither
+decrypted values nor passphrases are logged, placed in URLs, or cached back into local storage.
+
+Valid legacy schema-0/1/2 state first resolves through the reviewed schema-3 parser. The schema-3
+to schema-4 migration then validates every receipt and linked event, preserves all IDs, cores,
+hashes, and timestamps, signs compatible events, and stages encrypted artifacts in IndexedDB under
+a versioned migration journal. The old plaintext Chrome record is replaced only after every
+ciphertext and key is durable. An interrupted write leaves the old record and journal recoverable;
+retry resumes deterministically. A malformed schema-4 record, missing key/blob, failed signature,
+or failed AES authentication fails closed without silently rotating identity or displaying a false
+receipt.
+
+## Portable `.submittedit` packages
+
+Export is an explicit local operation for one receipt. The panel requires a passphrase of at least
+12 characters plus matching confirmation. It derives a non-extractable AES-256-GCM export key with
+PBKDF2-SHA-256, 600,000 iterations, and a fresh random 128-bit salt, then encrypts the validated
+private bundle with a fresh 96-bit IV. The version-1.0 JSON package authenticates its format,
+algorithm, KDF parameters, random package ID, receipt ID, and salt. Packages are limited to 1 MiB
+and use the `.submittedit` filename extension.
+
+An export contains no installation private key, per-receipt AES key, passphrase, browser database
+internals, unrelated receipt, authority secret, or wallet material. Losing the passphrase makes the
+package unrecoverable; SubmittedIt has no account, escrow, cloud backup, or recovery service.
+
+Import first enforces the size and exact versioned schema, derives the export key, authenticates and
+decrypts the package, validates the receipt and operational bundle, recomputes every event hash and
+link, and verifies every extension signature against the preserved public descriptor. Wrong
+passphrases, altered IV/ciphertext/metadata, truncated packages, unknown major versions, and
+malformed receipts fail before persistence. A duplicate requires explicit replacement. A valid
+import receives a new local per-receipt AES key and ciphertext; it never imports the original
+private signing key. When its public identity differs from the current installation, the panel
+labels it imported/read-only, deactivates any old tab binding, and will not pretend to append events
+as the original signer.
+
+The code also defines a tested utility that can place a future sharing secret only after `#` in a
+URL. It rejects bases that already contain a query or fragment and verifies the secret cannot
+escape into the path or query. There is no share-link UI, upload, hosted blob, server request, or
+live sharing claim yet. A later hosted-blob milestone must keep the fragment out of HTTP requests;
+the eventual verifier would decrypt in the browser.
+
+## Deletion
+
+`Delete receipt` requires confirmation and removes that receipt's index entry, ciphertext blob,
+and per-receipt AES key. `Delete all local data` separately warns that identity deletion is
+irreversible, removes granted SubmittedIt site permissions and runtime capture registration, then
+destroys every receipt blob/key, the installation private key and public record, settings, index,
+and migration state. It preserves unrelated browser and extension-storage data. A later empty-vault
+read may recreate the IndexedDB database container, but no signing identity, receipt key, or
+ciphertext is recreated. There is no secure-erasure claim for browser/OS backups or storage media.
 
 ## Permissions
 
-| Manifest capability                           | Current use                                                                                                                                              |
-| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `storage`                                     | Versioned settings, exact-origin metadata, revoked origins, and local Attempted/Site confirmed records; trusted extension contexts only where supported. |
-| `sidePanel`                                   | Hosts the SubmittedIt interface and lets the toolbar action open it.                                                                                     |
-| `activeTab`                                   | Exposes only the selected tab information needed to display/request its exact origin.                                                                    |
-| `scripting`                                   | Registers and injects the reviewed capture bundle only for origins with live optional permission.                                                        |
-| `alarms`                                      | Reserved for later reminders; Goal 09 schedules none.                                                                                                    |
-| `notifications`                               | Reserved for later reminders; Goal 09 sends none.                                                                                                        |
-| Optional `http://*/*`, `https://*/*` capacity | Allows a user-triggered request for one runtime origin; grants no site access at install time.                                                           |
+| Manifest capability                           | Current use                                                                                                                                                    |
+| --------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage`                                     | Versioned settings, public identity metadata, exact-origin metadata, and the minimal encrypted-receipt index; trusted extension contexts only where supported. |
+| `sidePanel`                                   | Hosts the SubmittedIt interface and lets the toolbar action open it.                                                                                           |
+| `activeTab`                                   | Exposes only the selected tab information needed to display/request its exact origin.                                                                          |
+| `scripting`                                   | Registers and injects the reviewed capture bundle only for origins with live optional permission.                                                              |
+| `alarms`                                      | Reserved for later reminders; the current extension schedules none.                                                                                            |
+| `notifications`                               | Reserved for later reminders; the current extension sends none.                                                                                                |
+| Optional `http://*/*`, `https://*/*` capacity | Allows a user-triggered request for one runtime origin; grants no site access at install time.                                                                 |
 
 The production manifest has no mandatory `host_permissions`, `<all_urls>`, `tabs`, cookies,
 history, web request, downloads, clipboard, identity, native messaging, or externally connectable
@@ -263,52 +336,51 @@ pnpm exec playwright install chromium
 pnpm --filter @submittedit/extension test:browser
 ```
 
-The unit suite covers strict messages, native-successful-control serialization, protected-value
-exclusion, leading-zero/empty/repeated values, canonical event hashing, storage migration,
-persistence, retry dedupe, distinct later attempts, tamper rejection, permission decisions, panel
-states, strict confirmation candidates/redaction/context storage, one-event linkage, and delete-all
-isolation.
+The 110-test unit suite covers strict messages, native-successful-control serialization,
+protected-value exclusion, canonical event hashing, legacy and interrupted secure-storage
+migration, persistence, retry dedupe, permission decisions, panel states, confirmation linkage,
+non-extractable P-256/AES key generation, P1363 signing and tamper checks, AES-GCM authentication,
+PBKDF2 export/import, wrong-passphrase and unsupported-version failures, duplicate replacement,
+fragment isolation, and receipt/delete-all key cleanup.
 
-The Playwright suite uses the production unpacked files in a real persistent Chromium context. An
-ignored temporary copy establishes one local synthetic fixture permission, then restores the exact
-production manifest. The test exercises runtime script registration, real multipart form
-navigation, file-byte exclusion, immediate refresh, panel reopen, duplicate submit/formdata
-handling, rapid double-click dedupe, later resubmission, browser restart, revocation, blocked
-post-revocation capture, settings, delete-all, canonical event recomputation, deliberate selection,
-cancel/redaction/reference review, SPA/redirect/refresh/back-forward binding, unrelated and
-duplicated tabs, stale/superseded attempts, cross-origin re-consent, worker restart persistence, and
-zero non-fixture HTTP(S) requests.
+The four-scenario Playwright suite uses production unpacked files in real persistent Chromium
+contexts. An ignored temporary copy establishes only synthetic fixture permissions, then restores
+the exact production manifest. It exercises runtime capture, multipart navigation, exclusions,
+dedupe, restart, revocation, confirmation review and navigation binding, P-256 signature
+verification, CryptoKey persistence/non-extractability, actual IndexedDB ciphertext decryption,
+plaintext index inspection, `.submittedit` download, wrong-passphrase failure, clean-profile import,
+original-identity verification/read-only labeling, explicit duplicate replacement, one-receipt and
+delete-all cleanup, and zero non-fixture HTTP(S) requests.
 
-## Manual Goal 09 review
+## Manual signed/encrypted receipt review
 
 Use only the fictional SubmittedIt Civic Filing Lab and synthetic values:
 
 1. Start PostgreSQL and the local web app, build the extension, and load the production unpacked
    directory.
-2. Visit `/demo/filing`, open the side panel, and confirm it shows the exact local origin before
-   permission.
-3. Enable that origin and confirm Chrome names only it.
-4. Confirm the panel shows **Prepared — Ready locally. Not submitted.**
-5. Submit the synthetic filing once.
-6. Confirm the site navigates normally, the recent receipt is labeled **Attempted** and **Pending
-   acceptance**, and no Accepted or Rejected state appears. The panel may immediately offer review
-   when the navigation has already produced a confirmation candidate.
-7. Confirm navigation alone creates no Site confirmed event. Select a short visible fictional
-   confirmation message, choose **Capture confirmation evidence**, review/redact it, and save.
-8. Confirm the panel says **Website confirmation captured** and **Official acceptance still
-   pending**, with no Accepted or Rejected label.
-9. Refresh, reopen the panel, and restart the browser; confirm the same two linked event hashes and
-   receipt remain.
-10. Return to the filing form and submit again intentionally after the first attempt. Confirm two
-    independent local receipts with distinct IDs.
-11. Exercise a fictional redirect to a new origin. Confirm a separate permission and explicit
-    origin-change checkbox are required before saving evidence.
-12. Confirm no transaction hash, authority result, extension signature, screenshot, network upload,
-    or Monad request appears.
-13. Revoke the origin and confirm another form submission or evidence save cannot create a receipt
-    event.
-14. Confirm delete-all removes the local receipts and permission while preserving unrelated
-    browser data.
+2. Use only the fictional `/demo/filing` form and synthetic values. Enable its exact origin and
+   create one Attempted receipt.
+3. Select a short fictional confirmation message, review it, and save Site confirmed evidence.
+4. Inspect the decrypted bundle through the test/debug workflow and confirm both event signatures
+   verify against the displayed stable installation public descriptor.
+5. Close/reopen the panel, reload the extension, and restart Chromium. Confirm the same identity,
+   event hashes, signatures, and encrypted receipt remain valid.
+6. Inspect Chrome `storage.local`; confirm form values, captured fields, receipt nonce,
+   confirmation text, and full receipt bodies are absent. Inspect IndexedDB and confirm one
+   non-extractable signing key, one non-extractable receipt key, and ciphertext exist.
+7. Export the receipt with an explicit passphrase and confirmation. Confirm the downloaded filename
+   ends in `.submittedit`, package JSON exposes only authenticated metadata/IV/ciphertext, and the
+   private signing key and local AES key are absent.
+8. Open a clean Chromium profile, import with the passphrase, and confirm event IDs, hashes,
+   original public descriptor, and signatures verify. Confirm the receipt is labeled imported and
+   read-only.
+9. Enter a wrong passphrase and tamper with a copy of the package; confirm both imports fail without
+   a partial receipt. Re-import the original and confirm duplicate replacement requires approval.
+10. Delete the imported receipt and confirm its index entry, ciphertext, and local key are gone.
+11. Run delete-all in the source profile and confirm permissions, receipts, AES keys, signing
+    identity, and public identity metadata are removed while unrelated browser data remains.
+12. Confirm no encrypted upload, fake share URL, authority result, transaction hash, relay request,
+    RPC request, or Monad transaction occurs.
 
 ## Known limitations
 
@@ -318,11 +390,16 @@ Use only the fictional SubmittedIt Civic Filing Lab and synthetic values:
   remain local evidence and a separate path hash is stored.
 - Mixed control types sharing one submitted name are represented by the preferred supported
   control category; ordinary repeated controls of the same type preserve value order.
-- Local receipts are not encrypted or signed in Goal 09. Anyone with sufficient access to the
-  unlocked Chrome profile can read or alter stored values, though tampered records fail strict
-  reload validation.
+- AES-GCM at rest and non-extractable CryptoKeys do not protect an unlocked profile from malicious
+  browser/OS code or a compromised extension runtime, which can ask Web Crypto to decrypt or sign.
+- There is no cloud sync, escrow, identity rotation, passphrase recovery, or secure-erasure
+  guarantee for browser backups/storage media. Losing extension data or an export passphrase is
+  irreversible.
+- Imported receipts retain their original public identity and are read-only when that identity
+  differs from the current installation; future lifecycle extension requires a separately reviewed
+  identity model.
 - Website confirmation supports selected visible text for confirmation-page, inline-message, and
   redirect evidence. It does not capture screenshots, DOM snapshots, downloads, arbitrary page
   content, or cross-origin frames.
-- Automatic retention, reminders, extension key generation, signatures, encrypted export, relay,
-  Monad anchoring, authority attachment, and public verification remain later work.
+- Automatic retention, reminders, encrypted upload, relay, Monad anchoring, extension-side
+  authority attachment, public verification, and live sharing remain later work.

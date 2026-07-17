@@ -1,5 +1,6 @@
 import { browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
+import { createSubmittedItExport, openSubmittedItExport } from "../lib/encrypted-receipt";
 import { createStoredAttemptReceipt } from "../lib/attempt-receipt";
 import {
   CAPTURE_CONTENT_SCRIPT_FILE,
@@ -15,6 +16,7 @@ import {
   type BackgroundResponse,
   type CaptureActivityEvent,
   type ExtensionErrorCode,
+  type PanelReceiptSummary,
   type PanelSnapshot,
   parseRuntimeRequest,
   type RuntimeRequest,
@@ -41,6 +43,18 @@ import {
   type SiteConfirmationReview,
 } from "../lib/site-confirmation";
 import {
+  deleteAllSecureExtensionData,
+  deleteSecureReceipt,
+  DuplicateReceiptError,
+  getPrivateReceiptBundle,
+  loadSecureExtensionState,
+  receiptSecurityMetadata,
+  saveSecureExtensionState,
+  storeImportedReceiptBundle,
+  type LoadedSecureExtensionState,
+  type SecureExtensionLocalState,
+} from "../lib/secure-storage";
+import {
   activeReceiptForTab,
   addRevokedSite,
   appendAttemptReceipt,
@@ -53,12 +67,8 @@ import {
   recentReceiptSummaries,
   summarizeAttemptReceipt,
 } from "../lib/storage-schema";
-import {
-  deleteAllExtensionData,
-  loadExtensionState,
-  type LocalStorageArea,
-  saveExtensionState,
-} from "../lib/storage";
+import { type LocalStorageArea } from "../lib/storage";
+import { IndexedDbCryptoVault } from "../lib/vault";
 
 class RuntimeFailure extends Error {
   constructor(
@@ -82,6 +92,7 @@ const localStorageArea: LocalStorageArea = {
     await browser.storage.local.remove(key);
   },
 };
+const cryptoVault = new IndexedDbCryptoVault();
 
 let storageWriteQueue: Promise<void> = Promise.resolve();
 
@@ -98,25 +109,43 @@ function now(): string {
   return new Date().toISOString();
 }
 
-async function loadState(): Promise<ExtensionLocalState> {
+async function loadSecureState(
+  options: { ensureIdentity?: boolean } = {},
+): Promise<LoadedSecureExtensionState> {
   try {
-    return (await loadExtensionState(localStorageArea)).state;
+    return await loadSecureExtensionState(localStorageArea, cryptoVault, options);
   } catch {
     throw new RuntimeFailure(
-      "STORAGE_READ_FAILED",
-      "SubmittedIt could not read its local settings and receipts. Try reloading the extension.",
+      "CRYPTO_READ_FAILED",
+      "SubmittedIt could not unlock and verify its local encrypted receipts. Its identity and data were left unchanged.",
       true,
     );
   }
 }
 
-async function saveState(state: ExtensionLocalState): Promise<ExtensionLocalState> {
+async function loadState(): Promise<ExtensionLocalState> {
+  return (await loadSecureState()).working;
+}
+
+async function saveState(
+  state: ExtensionLocalState,
+  onProgress?: Parameters<typeof saveSecureExtensionState>[5],
+): Promise<ExtensionLocalState> {
   try {
-    return await saveExtensionState(localStorageArea, state);
+    return (
+      await saveSecureExtensionState(
+        localStorageArea,
+        cryptoVault,
+        state,
+        new Date().toISOString(),
+        globalThis.crypto,
+        onProgress,
+      )
+    ).working;
   } catch {
     throw new RuntimeFailure(
-      "STORAGE_WRITE_FAILED",
-      "SubmittedIt could not save its local data.",
+      "CRYPTO_WRITE_FAILED",
+      "SubmittedIt could not sign and encrypt its local data. Existing receipts were left unchanged.",
       true,
     );
   }
@@ -414,6 +443,7 @@ async function reconcileConfirmationContextForSite(
 function deriveConfirmationOpportunity(
   state: ExtensionLocalState,
   site: SiteContext,
+  persistent: SecureExtensionLocalState,
 ): ConfirmationOpportunity | null {
   if (site.kind !== "supported") {
     return null;
@@ -439,7 +469,7 @@ function deriveConfirmationOpportunity(
           : "READY";
   return {
     kind,
-    receipt: summarizeAttemptReceipt(receipt),
+    receipt: secureReceiptSummary(receipt, persistent),
     currentOrigin: context.currentOrigin,
     expiresAt: context.expiresAt,
     navigationSequence: context.sequence,
@@ -449,18 +479,87 @@ function deriveConfirmationOpportunity(
   };
 }
 
-async function buildSnapshot(suppliedState?: ExtensionLocalState): Promise<PanelSnapshot> {
-  const loaded = suppliedState ?? (await loadState());
-  const reconciled = await reconcileCurrentSite(loaded);
-  const state = await reconcileConfirmationContextForSite(reconciled.state, reconciled.site);
-  const site = reconciled.site;
+function secureReceiptSummary(
+  receipt: Parameters<typeof summarizeAttemptReceipt>[0],
+  persistent: SecureExtensionLocalState,
+): PanelReceiptSummary {
+  const summary = summarizeAttemptReceipt(receipt);
+  const metadata = receiptSecurityMetadata(persistent, receipt.receiptId);
+  if (!metadata) {
+    throw new RuntimeFailure(
+      "CRYPTO_READ_FAILED",
+      "SubmittedIt found a receipt without its authenticated encrypted index entry.",
+      false,
+    );
+  }
+  return {
+    ...summary,
+    security: {
+      encrypted: true,
+      encryptionAlgorithm: "AES-256-GCM",
+      extensionKeyId: metadata.extensionKeyId,
+      ownership: metadata.ownership,
+      readOnly: metadata.ownership === "IMPORTED",
+      signatureCount: receipt.currentStage === "SITE_CONFIRMED" ? 2 : 1,
+      signaturesVerified: true,
+    },
+  };
+}
+
+async function buildSnapshot(
+  suppliedState?: ExtensionLocalState,
+  suppliedPersistent?: SecureExtensionLocalState,
+): Promise<PanelSnapshot> {
+  let state: ExtensionLocalState;
+  let site: SiteContext;
+  let persistent: SecureExtensionLocalState;
+  const isPostDeletionSnapshot =
+    suppliedState !== undefined &&
+    suppliedPersistent?.identity === null &&
+    suppliedPersistent.receiptIndex.length === 0;
+  if (isPostDeletionSnapshot) {
+    const reconciled = await reconcileCurrentSite(suppliedState);
+    state = await reconcileConfirmationContextForSite(reconciled.state, reconciled.site);
+    site = reconciled.site;
+    persistent = suppliedPersistent;
+  } else {
+    const reconciled = await queueStorageWrite(async () => {
+      const loaded = await loadSecureState();
+      const currentSite = await reconcileCurrentSite(loaded.working);
+      const currentState = await reconcileConfirmationContextForSite(
+        currentSite.state,
+        currentSite.site,
+      );
+      const currentPersistent = (await loadSecureState()).persistent;
+      return { state: currentState, site: currentSite.site, persistent: currentPersistent };
+    });
+    ({ state, site, persistent } = reconciled);
+  }
   return {
     welcomeRequired: !state.hasSeenWelcome,
     site,
     settings: state.settings,
     receiptIndexCount: state.receiptIndex.length,
-    recentReceipts: recentReceiptSummaries(state),
-    confirmationOpportunity: deriveConfirmationOpportunity(state, site),
+    recentReceipts: recentReceiptSummaries(state).map((summary) => {
+      const receipt = receiptById(state, summary.receiptId);
+      if (!receipt) {
+        throw new RuntimeFailure(
+          "CRYPTO_READ_FAILED",
+          "A local receipt index is inconsistent.",
+          false,
+        );
+      }
+      return secureReceiptSummary(receipt, persistent);
+    }),
+    confirmationOpportunity: deriveConfirmationOpportunity(state, site, persistent),
+    crypto: {
+      status: persistent.identity ? "READY" : "NOT_INITIALIZED",
+      identityCreatedAt: persistent.identity?.createdAt ?? null,
+      identityFingerprint: persistent.identity?.fingerprint ?? null,
+      publicKey: persistent.identity?.publicKey ?? null,
+      receiptEncryption: "AES-256-GCM",
+      storage: "CHROME_INDEX_PLUS_INDEXED_DB_VAULT",
+    },
   };
 }
 
@@ -548,21 +647,25 @@ async function handlePermissionResult(
     );
   }
 
-  const state = await loadState();
-  const timestamp = now();
-  const saved = await saveState({
-    ...state,
-    enabledOrigins: {
-      ...state.enabledOrigins,
-      [inspected.origin]: {
-        origin: inspected.origin,
-        enabledAt: state.enabledOrigins[inspected.origin]?.enabledAt ?? timestamp,
+  const saved = await queueStorageWrite(async () => {
+    const state = await loadState();
+    const timestamp = now();
+    return saveState({
+      ...state,
+      enabledOrigins: {
+        ...state.enabledOrigins,
+        [inspected.origin]: {
+          origin: inspected.origin,
+          enabledAt: state.enabledOrigins[inspected.origin]?.enabledAt ?? timestamp,
+        },
       },
-    },
-    settings: {
-      ...state.settings,
-      revokedSites: state.settings.revokedSites.filter((site) => site.origin !== inspected.origin),
-    },
+      settings: {
+        ...state.settings,
+        revokedSites: state.settings.revokedSites.filter(
+          (site) => site.origin !== inspected.origin,
+        ),
+      },
+    });
   });
   await syncCaptureRegistration(saved);
   await injectCaptureScript(request.tabId);
@@ -577,10 +680,11 @@ async function revokeCurrentSite(): Promise<BackgroundResponse> {
   if (!snapshot.site.permissionGranted) {
     return { ok: true, snapshot };
   }
+  const supportedSite = snapshot.site;
 
-  await uninstallCaptureForOrigin(snapshot.site.permissionPattern);
+  await uninstallCaptureForOrigin(supportedSite.permissionPattern);
   const removed = await browser.permissions.remove({
-    origins: [snapshot.site.permissionPattern],
+    origins: [supportedSite.permissionPattern],
   });
   if (!removed) {
     throw new RuntimeFailure(
@@ -590,13 +694,15 @@ async function revokeCurrentSite(): Promise<BackgroundResponse> {
     );
   }
 
-  const state = await loadState();
-  const enabledOrigins = { ...state.enabledOrigins };
-  delete enabledOrigins[snapshot.site.origin];
-  const saved = await saveState({
-    ...state,
-    enabledOrigins,
-    settings: addRevokedSite(state.settings, snapshot.site.origin, now()),
+  const saved = await queueStorageWrite(async () => {
+    const state = await loadState();
+    const enabledOrigins = { ...state.enabledOrigins };
+    delete enabledOrigins[supportedSite.origin];
+    return saveState({
+      ...state,
+      enabledOrigins,
+      settings: addRevokedSite(state.settings, supportedSite.origin, now()),
+    });
   });
   await syncCaptureRegistration(saved);
   return { ok: true, snapshot: await buildSnapshot(saved) };
@@ -697,14 +803,26 @@ async function handleCaptureAttempt(
       const state = await loadState();
       const receipt = createStoredAttemptReceipt(request, tabId);
       const appended = appendAttemptReceipt(state, receipt);
-      const saved = appended.deduplicated ? state : await saveState(appended.state);
+      const saved = appended.deduplicated
+        ? state
+        : await saveState(appended.state, async (phase) => {
+            await broadcastCaptureActivity({
+              type: "CAPTURE_ACTIVITY",
+              phase,
+              origin: request.origin,
+              receiptId: request.receiptId,
+              capturedAt: request.capturedAt,
+            });
+          });
+      const persistent = (await loadSecureState()).persistent;
       return {
         saved,
+        persistent,
         receipt: appended.receipt,
         deduplicated: appended.deduplicated,
       };
     });
-    const summary = summarizeAttemptReceipt(result.receipt);
+    const summary = secureReceiptSummary(result.receipt, result.persistent);
     await broadcastCaptureActivity({
       type: "CAPTURE_ACTIVITY",
       phase: "CAPTURED",
@@ -713,7 +831,7 @@ async function handleCaptureAttempt(
     });
     return {
       ok: true,
-      snapshot: await buildSnapshot(result.saved),
+      snapshot: await buildSnapshot(result.saved, result.persistent),
       capture: {
         deduplicated: result.deduplicated,
         receipt: summary,
@@ -1025,10 +1143,14 @@ async function saveSiteConfirmation(
         false,
       );
     }
+    const loaded = await loadSecureState();
     return {
       ok: true,
-      snapshot: await buildSnapshot(initialState),
-      confirmation: { deduplicated: true, receipt: summarizeAttemptReceipt(existing) },
+      snapshot: await buildSnapshot(initialState, loaded.persistent),
+      confirmation: {
+        deduplicated: true,
+        receipt: secureReceiptSummary(existing, loaded.persistent),
+      },
     };
   }
 
@@ -1130,7 +1252,8 @@ async function saveSiteConfirmation(
         event: receipt.siteConfirmationEvent,
         evidence: receipt.siteConfirmationEvidence,
       });
-      return { saved: state, ...appended };
+      const persistent = (await loadSecureState()).persistent;
+      return { saved: state, persistent, ...appended };
     }
     const context = receipt?.confirmationContext;
     if (
@@ -1170,16 +1293,27 @@ async function saveSiteConfirmation(
         savedAt: timestamp,
       },
     });
-    const saved = appended.deduplicated ? state : await saveState(appended.state);
-    return { saved, ...appended };
+    const saved = appended.deduplicated
+      ? state
+      : await saveState(appended.state, async (phase) => {
+          await broadcastCaptureActivity({
+            type: "CAPTURE_ACTIVITY",
+            phase,
+            origin: session.candidate.origin,
+            receiptId: canonical.receiptId,
+            capturedAt: timestamp,
+          });
+        });
+    const persistent = (await loadSecureState()).persistent;
+    return { saved, persistent, ...appended };
   });
   confirmationReviewSessions.delete(request.reviewId);
   return {
     ok: true,
-    snapshot: await buildSnapshot(result.saved),
+    snapshot: await buildSnapshot(result.saved, result.persistent),
     confirmation: {
       deduplicated: result.deduplicated,
-      receipt: summarizeAttemptReceipt(result.receipt),
+      receipt: secureReceiptSummary(result.receipt, result.persistent),
     },
   };
 }
@@ -1194,6 +1328,105 @@ async function cancelSiteConfirmationReview(
   return { ok: true, snapshot: await buildSnapshot() };
 }
 
+async function exportReceipt(
+  request: Extract<RuntimeRequest, { type: "EXPORT_RECEIPT" }>,
+): Promise<BackgroundResponse> {
+  if (request.passphrase !== request.passphraseConfirmation) {
+    throw new RuntimeFailure(
+      "PASSPHRASE_MISMATCH",
+      "The export passphrase and confirmation do not match.",
+      true,
+    );
+  }
+  try {
+    const bundle = await getPrivateReceiptBundle(localStorageArea, cryptoVault, request.receiptId);
+    const exported = await createSubmittedItExport(bundle, request.passphrase);
+    return {
+      ok: true,
+      snapshot: await buildSnapshot(),
+      exportedReceipt: {
+        filename: exported.filename,
+        packageText: exported.packageText,
+        receiptId: request.receiptId,
+      },
+    };
+  } catch (error) {
+    if (error instanceof RuntimeFailure) {
+      throw error;
+    }
+    throw new RuntimeFailure(
+      "EXPORT_FAILED",
+      "SubmittedIt could not create the encrypted .submittedit package. No receipt or key was exposed.",
+      true,
+    );
+  }
+}
+
+async function importReceipt(
+  request: Extract<RuntimeRequest, { type: "IMPORT_RECEIPT" }>,
+): Promise<BackgroundResponse> {
+  try {
+    const bundle = await openSubmittedItExport(request.packageText, request.passphrase);
+    const result = await queueStorageWrite(async () => {
+      const before = await loadSecureState();
+      const existing = before.bundles.has(bundle.receipt.receiptId);
+      const stored = await storeImportedReceiptBundle(
+        localStorageArea,
+        cryptoVault,
+        bundle,
+        request.replaceDuplicate,
+      );
+      return { ...stored, existing };
+    });
+    const summary = secureReceiptSummary(result.bundle.operational, result.state.persistent);
+    return {
+      ok: true,
+      snapshot: await buildSnapshot(result.state.working, result.state.persistent),
+      importedReceipt: {
+        receipt: summary,
+        replaced: result.existing,
+      },
+    };
+  } catch (error) {
+    if (error instanceof DuplicateReceiptError) {
+      throw new RuntimeFailure(
+        "IMPORT_DUPLICATE",
+        "That receipt already exists in this profile. Confirm replacement to overwrite only that encrypted copy.",
+        true,
+      );
+    }
+    if (error instanceof RuntimeFailure) {
+      throw error;
+    }
+    throw new RuntimeFailure(
+      "IMPORT_FAILED",
+      "SubmittedIt could not decrypt and verify that .submittedit package. Check the file and passphrase.",
+      true,
+    );
+  }
+}
+
+async function deleteReceipt(
+  request: Extract<RuntimeRequest, { type: "DELETE_RECEIPT" }>,
+): Promise<BackgroundResponse> {
+  try {
+    const deleted = await queueStorageWrite(() =>
+      deleteSecureReceipt(localStorageArea, cryptoVault, request.receiptId),
+    );
+    return {
+      ok: true,
+      snapshot: await buildSnapshot(deleted.working, deleted.persistent),
+      deletedReceiptId: request.receiptId,
+    };
+  } catch {
+    throw new RuntimeFailure(
+      "DELETE_FAILED",
+      "SubmittedIt could not delete that encrypted receipt and its local key.",
+      true,
+    );
+  }
+}
+
 async function handleRequest(
   request: RuntimeRequest,
   sender: Browser.runtime.MessageSender,
@@ -1202,8 +1435,10 @@ async function handleRequest(
     case "BOOTSTRAP":
       return { ok: true, snapshot: await buildSnapshot() };
     case "DISMISS_WELCOME": {
-      const state = await loadState();
-      const saved = await saveState({ ...state, hasSeenWelcome: true });
+      const saved = await queueStorageWrite(async () => {
+        const state = await loadState();
+        return saveState({ ...state, hasSeenWelcome: true });
+      });
       return { ok: true, snapshot: await buildSnapshot(saved) };
     }
     case "PERMISSION_RESULT":
@@ -1213,40 +1448,56 @@ async function handleRequest(
     case "REVOKE_CURRENT_SITE":
       return revokeCurrentSite();
     case "UPDATE_SETTINGS": {
-      const state = await loadState();
-      const saved = await saveState({
-        ...state,
-        settings: {
-          ...state.settings,
-          reminderInterval: request.reminderInterval,
-          retentionPreference: request.retentionPreference,
-          demoMode: request.demoMode,
-        },
+      const saved = await queueStorageWrite(async () => {
+        const state = await loadState();
+        return saveState({
+          ...state,
+          settings: {
+            ...state.settings,
+            reminderInterval: request.reminderInterval,
+            retentionPreference: request.retentionPreference,
+            demoMode: request.demoMode,
+          },
+        });
       });
       return { ok: true, snapshot: await buildSnapshot(saved) };
     }
     case "CLEAR_REVOKED_SITES": {
-      const state = await loadState();
-      const saved = await saveState({
-        ...state,
-        settings: { ...state.settings, revokedSites: [] },
+      const saved = await queueStorageWrite(async () => {
+        const state = await loadState();
+        return saveState({
+          ...state,
+          settings: { ...state.settings, revokedSites: [] },
+        });
       });
       return { ok: true, snapshot: await buildSnapshot(saved) };
     }
     case "DELETE_LOCAL_DATA": {
       await removeAllGrantedOrigins();
-      let state: ExtensionLocalState;
+      let deleted: LoadedSecureExtensionState;
       try {
-        state = await deleteAllExtensionData(localStorageArea);
+        deleted = await queueStorageWrite(() =>
+          deleteAllSecureExtensionData(localStorageArea, cryptoVault),
+        );
       } catch {
         throw new RuntimeFailure(
-          "STORAGE_WRITE_FAILED",
-          "SubmittedIt could not delete its local data.",
+          "DELETE_FAILED",
+          "SubmittedIt could not delete every encrypted receipt, local key, and installation identity.",
           true,
         );
       }
-      return { ok: true, snapshot: await buildSnapshot(state) };
+      confirmationReviewSessions.clear();
+      return {
+        ok: true,
+        snapshot: await buildSnapshot(deleted.working, deleted.persistent),
+      };
     }
+    case "DELETE_RECEIPT":
+      return deleteReceipt(request);
+    case "EXPORT_RECEIPT":
+      return exportReceipt(request);
+    case "IMPORT_RECEIPT":
+      return importReceipt(request);
     case "CAPTURE_ATTEMPT":
       return handleCaptureAttempt(request, sender);
     case "CAPTURE_PAGE_ERROR":
@@ -1294,36 +1545,38 @@ async function updateOriginsFromPermissionEvent(
     await uninstallCaptureEverywhere();
   }
 
-  const state = await loadState();
-  let changed = false;
-  const enabledOrigins = { ...state.enabledOrigins };
-  let settings = state.settings;
-  const timestamp = now();
+  const saved = await queueStorageWrite(async () => {
+    const state = await loadState();
+    let changed = false;
+    const enabledOrigins = { ...state.enabledOrigins };
+    let settings = state.settings;
+    const timestamp = now();
 
-  for (const pattern of origins) {
-    const rawOrigin = pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
-    const inspected = inspectNormalizedOrigin(rawOrigin);
-    if (!inspected.ok) {
-      continue;
+    for (const pattern of origins) {
+      const rawOrigin = pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
+      const inspected = inspectNormalizedOrigin(rawOrigin);
+      if (!inspected.ok) {
+        continue;
+      }
+      if (granted) {
+        enabledOrigins[inspected.origin] ??= {
+          origin: inspected.origin,
+          enabledAt: timestamp,
+        };
+        settings = {
+          ...settings,
+          revokedSites: settings.revokedSites.filter((site) => site.origin !== inspected.origin),
+        };
+        changed = true;
+      } else if (enabledOrigins[inspected.origin]) {
+        delete enabledOrigins[inspected.origin];
+        settings = addRevokedSite(settings, inspected.origin, timestamp);
+        changed = true;
+      }
     }
-    if (granted) {
-      enabledOrigins[inspected.origin] ??= {
-        origin: inspected.origin,
-        enabledAt: timestamp,
-      };
-      settings = {
-        ...settings,
-        revokedSites: settings.revokedSites.filter((site) => site.origin !== inspected.origin),
-      };
-      changed = true;
-    } else if (enabledOrigins[inspected.origin]) {
-      delete enabledOrigins[inspected.origin];
-      settings = addRevokedSite(settings, inspected.origin, timestamp);
-      changed = true;
-    }
-  }
 
-  const saved = changed ? await saveState({ ...state, enabledOrigins, settings }) : state;
+    return changed ? saveState({ ...state, enabledOrigins, settings }) : state;
+  });
   await syncCaptureRegistration(saved);
   await injectCaptureForEnabledTabs(saved);
 }
@@ -1345,11 +1598,6 @@ async function closeConfirmationContextForTab(tabId: number): Promise<void> {
 }
 
 async function initializeExtension(): Promise<void> {
-  let state = await loadState();
-  state = await reconcileAllPermissions(state);
-  await syncCaptureRegistration(state);
-  await injectCaptureForEnabledTabs(state);
-
   if (browser.storage.local.setAccessLevel) {
     try {
       await browser.storage.local.setAccessLevel({
@@ -1359,6 +1607,13 @@ async function initializeExtension(): Promise<void> {
       // Older Chromium versions may not expose storage access levels.
     }
   }
+
+  const state = await queueStorageWrite(async () => {
+    const loaded = await loadState();
+    return reconcileAllPermissions(loaded);
+  });
+  await syncCaptureRegistration(state);
+  await injectCaptureForEnabledTabs(state);
 }
 
 function ignoreBackgroundFailure(operation: Promise<unknown>): void {

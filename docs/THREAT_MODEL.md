@@ -10,8 +10,12 @@ and read-validated on Monad Testnet. The demo authority uses real server-side P-
 strictly matching terminal event cores. The extension now performs exact-origin permission
 coordination, native standard-form Attempted capture, canonical event hashing, narrow deduplication,
 durable local storage, bounded same-tab navigation binding, explicit selected-text review, and one
-canonical linked Site confirmed event. Extension signing, encryption, relay, public verifier
-behavior, and application-level chain confirmation remain future work.
+canonical linked Site confirmed event. The extension additionally owns a persistent
+non-extractable P-256 installation identity, signs
+and verifies every retained local event, migrates plaintext receipts copy-on-write, encrypts each
+private bundle with its own AES-256-GCM key, and supports passphrase-encrypted export plus strict
+clean-profile import and deletion. Encrypted upload, relay, public verifier behavior, and
+application-level chain confirmation remain future work.
 
 The protected properties are:
 
@@ -42,6 +46,19 @@ The protected properties are:
 - optional site access can be revoked and does not become install-time blanket host access;
 - malformed local extension state cannot seed a fake lifecycle/signature/chain claim or expand
   permission scope;
+- the installation private key and per-receipt AES keys never enter plaintext indexes, exports,
+  logs, URLs, runtime responses, web services, or Monad;
+- locally owned events cannot enter encrypted storage unless their hashes, links, public descriptor,
+  and P-256 signatures verify;
+- complete private receipt bundles and confirmation snippets do not remain in plaintext extension
+  storage after migration;
+- per-receipt ciphertext uses distinct random AES keys and fresh IVs with authenticated metadata;
+- interrupted plaintext migration remains recoverable and cannot publish a partial secure index;
+- altered/wrong-passphrase/unsupported export packages cannot create a partial imported receipt;
+- imported foreign-identity receipts remain verifiable but read-only, without importing the
+  original signing key;
+- deleting one receipt removes its index/blob/key, and delete-all removes every receipt and the
+  installation identity without deleting unrelated browser data;
 - Attempted cannot be displayed as Site confirmed without saved evidence, and neither Attempted nor
   Site confirmed can be displayed as Accepted, Rejected, verified, or onchain;
 - private receipt contents never enter contract inputs, state, logs, or errors.
@@ -55,11 +72,14 @@ parses it, reapplies capture policy, constructs the exact Attempted core, recomp
 and validates the one-event chain before storage. Structural observations contain no page text. A
 deliberate selection command creates a short-lived worker review; the service worker rechecks live
 tab/document/permission context, permits deletion-only redaction, constructs the exact Site
-confirmed core, and validates the two-event chain before storage. The Goal 06 fictional authority signs only a
+confirmed core, and validates the two-event chain before storage. For each local event, it
+recomputes the extension-signature payload, signs with its non-extractable P-256 key, verifies with
+the stored SPKI descriptor, and only then encrypts the complete private bundle under a distinct
+non-extractable AES-GCM key in IndexedDB. The Goal 06 fictional authority signs only a
 caller-proposed terminal event core whose acknowledgment exactly matches its PostgreSQL record. A
-future extension milestone signs browser events. A future relay validates requests and submits
-transactions. Monad orders confirmed transactions. A future verifier independently recomputes
-hashes/signatures/linkage and compares them with canonical-chain state and logs.
+future relay validates requests and submits transactions. Monad orders confirmed transactions. A
+future verifier independently recomputes hashes/signatures/linkage and compares them with
+canonical-chain state and logs.
 
 The contract trusts none of those actors for real-world truth. It validates only fixed-size arguments and stored lifecycle structure. Any address can call it, and transaction sender, extension-key identity, authority-key identity, receipt subject, website, and real-world authority are distinct concepts.
 
@@ -74,8 +94,8 @@ The contract trusts none of those actors for real-world truth. It validates only
 | Disabled/unchecked control overcapture       | The serializer starts from native FormData successful entries and marks disabled/unchecked controls unsuccessful; browser tests prove they are absent.                                                                             | Nonstandard site code that rewrites FormData or submission behavior can change what the browser submits.                                          |
 | Malformed or oversized capture message       | Capture messages have exact keys, canonical URLs/origins, 256-field and per-value bounds, a 128 KiB total limit, recomputed fingerprint, protected-value checks, and trusted extension sender validation.                          | Very large legitimate forms fail with a truthful no-receipt error.                                                                                |
 | Duplicate DOM events or rapid double-click   | Same-form privacy-filtered fingerprints reuse one random attempt identity for 1.5 seconds; submit/formdata duplicates and rapid repeated submits therefore send the same receipt identity.                                         | An intentional repeat inside the narrow window is treated as the same physical attempt; the user can wait and resubmit.                           |
-| Worker-message retry creates a second record | The random attempt ID is persisted; worker writes are serialized, exact retries return the existing receipt, and conflicting identity reuse fails closed.                                                                          | Chrome local storage offers no multi-device transaction; the protection is scoped to one installed extension profile.                             |
-| Navigation destroys evidence                 | The runtime message wakes/holds the service worker until strict storage succeeds. The website is not blocked. Real Chromium proves navigation, immediate refresh, panel reopen, worker/browser restart recovery.                   | If serialization or storage fails before persistence, the site may still navigate; SubmittedIt truthfully claims no receipt for that attempt.     |
+| Worker-message retry creates a second record | The random attempt ID is persisted; all storage mutations are serialized, exact retries return the existing signed/ciphertext artifact, and conflicting identity reuse fails closed.                                               | Protection is scoped to one installed profile; there is no cross-device transaction or sync.                                                      |
+| Navigation destroys evidence                 | The runtime response remains open through validation, signing, verification, AES-GCM persistence, and index commit. Post-submit observations await that response. Real Chromium proves refresh/panel/worker/browser recovery.      | If any step fails before commit, the site may still navigate; SubmittedIt truthfully claims no receipt for that attempt.                          |
 | Navigation is mistaken for confirmation      | Document/history/DOM/panel observations contain only structural metadata and make review available; they never create an event or read page text. The user must select, review, and save visible evidence.                         | A deceptive website can display misleading text. Site confirmed records what was displayed, not whether it is honest or authoritative.            |
 | Unrelated or stale page attaches evidence    | A 30-minute context binds tab ID, Attempted hash, random document instance, URL/origin, and sequence. Duplicate tabs, superseded attempts, tab closure, review timeout, navigation during review, and permission loss fail closed. | A compromised browser/renderer can lie about tab and document state; local binding is not remote attestation.                                     |
 | Automatic page-text or screenshot capture    | Mutation reports read no text. Only a visible user selection is returned after an explicit action; the bundle has no screenshot/display-capture capability and stores no DOM/HTML snapshot.                                        | The selected text and page title may still contain sensitive information; the user must review and redact before saving.                          |
@@ -85,9 +105,16 @@ The contract trusts none of those actors for real-world truth. It validates only
 | Canceled review retains selected text        | Cancel explicitly removes the worker-only review session. Sessions are capped at 20, expire within five minutes, disappear on worker restart/tab closure, and persist no raw selection before save.                                | Browser process memory may retain ordinary implementation-level remnants outside application control.                                             |
 | Tab/origin race                              | Permission results match original tab ID/origin; capture sender URL, declared origin, page URL, and action origin are normalized and cross-checked.                                                                                | A fully compromised renderer/browser is outside this protection.                                                                                  |
 | Permission removed outside the panel         | Permission events dispose listeners, update runtime registration, reconcile stored metadata, and reinject only remaining enabled origins. Every capture independently rechecks permission.                                         | A stale listener may briefly attempt a message during browser event propagation, but the worker rejects it after permission loss.                 |
-| Local storage disclosure                     | Protected secrets/files are excluded, record count/navigation history/snippets are bounded, access is trusted-context-only where supported, and delete-all exists.                                                                 | Ordinary submitted and user-approved confirmation values are unencrypted in Goal 09; profile/device compromise can read them. Use synthetic data. |
-| Local storage tampering                      | Schema-v3 validation strictly parses every receipt, recomputes one- or two-event hash/linkage, rejects signatures/authority/chain fields, and resets malformed state rather than displaying it.                                    | Reset cannot recover a damaged original receipt; local availability depends on the browser profile.                                               |
-| Fake future receipt state                    | Runtime can reach Prepared, Capturing, Attempted, Site confirmed/Pending acceptance, and errors only. Stored signature/authority/anchor slots remain null; panel copy contains no authority or onchain success.                    | Later goals must add real cryptographic and runtime evidence before exposing Accepted, Rejected, verified, or onchain states.                     |
+| Plaintext local-storage disclosure           | Full bundles and snippets are AES-256-GCM ciphertext in IndexedDB; Chrome storage keeps only public identity/settings and minimal locator/origin/stage/time metadata. Tests inspect raw storage for synthetic private markers.     | Metadata remains visible. A compromised unlocked browser or extension runtime can invoke live keys and read decrypted memory.                     |
+| Signing-key extraction or substitution       | The P-256 private CryptoKey is generated non-extractable, structured-cloned only into extension IndexedDB, and matched to public schema-4 metadata on every load. Public SPKI is the only exported key.                            | Non-extractable prevents ordinary export, not use by malicious browser/OS/extension code. There is no rotation/recovery/revocation service.       |
+| Weak/reused receipt encryption               | Each receipt receives a distinct non-extractable random 256-bit AES key; every encryption creates a fresh random 96-bit IV. AAD binds format/blob/receipt/schema/public signer/key version. Unit/browser tests inspect artifacts.  | Web Crypto and browser RNG are trusted. Memory plaintext and backup/storage remnants remain outside application control.                          |
+| Local ciphertext/index tampering             | Strict schema-4 parsing, key/blob identity checks, AES-GCM authentication, full bundle validation, hash/link recomputation, and P-256 verification all fail closed without silently resetting or rotating keys.                    | Damage can make a receipt unavailable; there is no cloud recovery. An attacker controlling the live runtime can replace both data and behavior.   |
+| Interrupted plaintext migration              | A versioned IndexedDB journal stages validated signed ciphertext copy-on-write; plaintext schema 3 is replaced only after all keys/blobs are durable, and retry resumes from recoverable state.                                    | Legacy plaintext remains exposed until migration commits. Browser/OS failure can still impair availability.                                       |
+| Export passphrase guessing or disclosure     | `.submittedit` uses PBKDF2-SHA-256 with a random 128-bit salt, 600,000 iterations, and AES-256-GCM; passphrases are confirmed, bounded, never persisted/logged, and absent from the file.                                          | A weak user passphrase permits offline guessing; a lost passphrase cannot be recovered.                                                           |
+| Malicious/corrupt portable import            | Size/exact-version parsing, AES authentication, strict receipt validation, hash/link recomputation, public descriptor and every signature check precede any re-encryption or persistence. Duplicates require approval.             | Imported evidence may still describe a deceptive site. Verification authenticates its signer/data, not real-world truth.                          |
+| Imported signer impersonation                | The original public descriptor/signatures are preserved; a foreign-identity receipt is marked imported/read-only and old active tab context is superseded. The original private key is never imported.                             | Future cross-installation lifecycle continuation needs a separately reviewed identity model.                                                      |
+| Incomplete deletion                          | Delete-one removes index/blob/key. Delete-all also removes permissions, settings, migration residue, every AES key/blob, and signing identity; tests inspect vault counts and preserve unrelated data.                             | No secure-erasure claim is made for browser/OS backups or physical media.                                                                         |
+| Fake future receipt state                    | Runtime can reach Prepared, Capturing, Signing, Encrypting, Attempted, Site confirmed/Pending acceptance, import/export/delete, and errors only. Authority and chain-anchor slots remain absent.                                   | Later goals must add real authority, relay, chain, and verifier evidence before exposing Accepted, Rejected, or onchain states.                   |
 | External telemetry or page upload            | Capture runtime contains no fetch, XHR, WebSocket, beacon, analytics, authority, relay, RPC, or Monad request. Persistent Chromium fails on non-fixture HTTP(S) traffic.                                                           | Browser/OS background traffic and the website's own submission request are outside the extension request boundary.                                |
 
 ## Fictional demo portal threats and controls
@@ -143,18 +170,25 @@ receipt-bound public signature data. It does not contain the raw status token, r
 user-agent, IP address, browser fingerprint, authority private key, extension key, database dump, or
 real tax document.
 
-The Goal 09 extension's local record contains preferences, exact enabled/revoked origins and
-timestamps, onboarding/migration metadata, canonical Attempted events, and optional canonical Site
-confirmed events. An Attempted event may contain ordinary submitted synthetic values, normalized
-local page/action paths, form metadata, capture time, and exclusion descriptors. A user-approved
-Site confirmed event may contain a privacy-safe page URL, deletion-redacted visible selection,
-optional visible reference, and evidence type; bounded local metadata may contain title, origin,
-snippet, navigation sequence, and explicit origin-change approval. Structural observations contain
-no page text. The record contains no password/token/autofill-secret values, file bytes/metadata,
-unselected page text, DOM/HTML snapshot, screenshot, cookies, request headers, keys, signatures,
-ciphertext, portal status token, authority outcome, relay data, transaction hash, block number, or
-Monad request. Chrome profile storage is a distinct local boundary and is not claimed to be
-encrypted.
+The extension's complete private bundle contains canonical Attempted and optional Site confirmed
+events plus bounded operational context. An Attempted event may contain ordinary submitted
+synthetic values, normalized local page/action paths, form metadata, capture time, and exclusion
+descriptors. A user-approved Site confirmed event may contain a privacy-safe page URL,
+deletion-redacted visible selection, optional visible reference, and evidence type; bounded local
+metadata may contain title, origin, snippet, navigation sequence, and explicit origin-change
+approval. Structural observations contain no page text. The bundle contains no
+password/token/autofill-secret values, file bytes/metadata, unselected page text, DOM/HTML snapshot,
+screenshot, cookies, request headers, portal status token, authority outcome, relay data,
+transaction hash, block number, or Monad request.
+
+That complete bundle and its P-256 signatures persist only under per-receipt AES-GCM ciphertext in
+extension IndexedDB. The separate schema-4 Chrome index contains settings, exact enabled/revoked
+origins/timestamps, public signing metadata, receipt/blob/key locators, truthful stage/status,
+origins, and event times—but no form values, confirmation snippets, signatures, private keys, AES
+keys, or full receipt bodies. IndexedDB separately holds non-extractable signing/AES CryptoKeys.
+The `.submittedit` package holds passphrase-derived ciphertext and authenticated public metadata,
+not either local private key. Plaintext exists transiently in renderer/service-worker memory during
+capture, review, encryption/decryption, export/import, and legacy migration.
 
 Hashes are not automatically private. A hash of predictable content can be guessed by dictionary
 attack, and public linkage can reveal patterns. Event hashes must remain domain-separated
@@ -203,6 +237,15 @@ back/forward behavior; unrelated/duplicated tabs; stale/superseded attempts and 
 cross-origin permission/consent; permission loss; and no extension network, screenshot, authority,
 signature, encryption, relay, or Monad behavior. The generated-bundle audit also rejects expanded
 permissions, screenshot/display capture, external network primitives, source maps, and private
-paths. Native browser-chrome prompt appearance remains a focused manual review because headless page automation
-cannot accept browser toolbar prompts. A future production deployment would warrant independent
-review beyond hackathon testing.
+paths. Goal 10 raises the extension suite to 110 unit checks covering Web Crypto key properties,
+P1363 signing/verification, AES-GCM/AAD/tamper behavior, secure and interrupted migration,
+plaintext-index absence, PBKDF2 export/import failures, duplicate replacement, foreign identity,
+fragment isolation, and key-aware deletion. Four production persistent-Chromium scenarios now also
+prove identity/key persistence and non-extractability, actual IndexedDB ciphertext, signature
+verification, plaintext-storage absence, `.submittedit` export, wrong-passphrase failure,
+clean-profile import, tamper/duplicate handling, and deletion—while preserving all Goal 07–09
+permission/capture/confirmation coverage and making zero non-fixture extension requests. The build
+audit requires signing/encryption/export machinery in the worker and rejects it in the page capture
+bundle. Goal 10 sends no Monad transaction. Native browser-chrome prompt appearance remains a
+focused manual review because headless page automation cannot accept browser toolbar prompts. A
+future production deployment would warrant independent review beyond hackathon testing.

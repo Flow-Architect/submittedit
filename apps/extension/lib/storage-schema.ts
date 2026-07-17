@@ -697,6 +697,10 @@ function parseStoredAttemptReceipt(value: unknown): StoredAttemptReceipt | null 
   }
 }
 
+export function validateStoredAttemptReceipt(value: unknown): StoredAttemptReceipt | null {
+  return parseStoredAttemptReceipt(value);
+}
+
 function parseReceiptIndex(value: unknown): StoredAttemptReceipt[] | null {
   if (!Array.isArray(value) || value.length > MAX_LOCAL_RECEIPTS) {
     return null;

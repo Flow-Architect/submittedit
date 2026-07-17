@@ -196,6 +196,24 @@ for (const requiredCaptureBoundary of [
   }
 }
 
+for (const requiredPrivateReceiptBoundary of [
+  "indexedDB",
+  "AES-GCM",
+  "ECDSA",
+  "PBKDF2",
+  "SUBMITTEDIT_PRIVATE_RECEIPT",
+  "SUBMITTEDIT_RECEIPT_EXPORT",
+  "EXPORT_RECEIPT",
+  "IMPORT_RECEIPT",
+  "DELETE_RECEIPT",
+  "SIGNING",
+  "ENCRYPTING",
+]) {
+  if (!workerSource.includes(requiredPrivateReceiptBoundary)) {
+    fail(`service worker is missing private-receipt boundary ${requiredPrivateReceiptBoundary}`);
+  }
+}
+
 const captureSource = await readFile(join(outputDirectory, "content-scripts/capture.js"), "utf8");
 const javascriptSource = (
   await Promise.all(
@@ -253,6 +271,12 @@ for (const forbiddenCaptureCapability of [
   ".textContent",
   "BEGIN PRIVATE KEY",
   "testnet.monad",
+  "indexedDB",
+  "AES-GCM",
+  "PBKDF2",
+  "SUBMITTEDIT_RECEIPT_EXPORT",
+  "EXPORT_RECEIPT",
+  "IMPORT_RECEIPT",
 ]) {
   if (captureSource.includes(forbiddenCaptureCapability)) {
     fail(`capture bundle contains out-of-scope capability: ${forbiddenCaptureCapability}`);

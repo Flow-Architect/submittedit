@@ -1,10 +1,12 @@
 # SubmittedIt receipt protocol 1.0
 
 This document is the public type and behavior contract for `@submittedit/receipt-core`. It defines
-deterministic evidence structures only. The Goal 09 extension uses these structures to create a
-local Attempted event and, after deliberate user review, at most one linked Site confirmed event;
-encryption, key generation, real extension signing/signature verification, contract writes, relay
-APIs, and final product verification remain separate boundaries.
+deterministic evidence structures only. The extension uses these structures to create a local
+Attempted event and, after deliberate user review, at most one linked Site confirmed event. It now
+uses the existing public-key descriptor, payload helper, and signature-envelope conventions to sign
+and verify both event types before storing their complete private bundle under authenticated local
+encryption. Encryption/export wrappers, contract writes, relay APIs, and final public verification
+remain separate boundaries and do not change protocol semantics.
 
 ## Protocol layers
 
@@ -152,7 +154,11 @@ interface LifecycleEventEnvelope {
 }
 ```
 
-The signature envelope fixes signer role, P-256/SHA-256 algorithm, P1363 base64url encoding, key ID, signature, and a domain-separated `payloadHash`. Goal 03 validates envelope structure and payload linkage but does not create or cryptographically verify signatures.
+The signature envelope fixes signer role, P-256/SHA-256 algorithm, P1363 base64url encoding, key ID,
+signature, and a domain-separated `payloadHash`. `receipt-core` defines and structurally validates
+the envelope and deterministic payload. The extension now creates and cryptographically verifies
+extension-role signatures with Web Crypto; the Goal 06 server independently creates
+authority-role signatures for matching terminal demo events.
 
 Extension signature payload:
 
@@ -164,6 +170,21 @@ Extension signature payload:
 
 Authority signature payload adds the acknowledgment's `authorityId` and `outcome`. This payload exists only for an authority event.
 
+The current extension's signing flow is:
+
+1. strictly parse the event envelope and core;
+2. recompute `eventHash` from the core and reject any mismatch;
+3. call the existing extension-signature payload helper;
+4. sign its exact domain-separated bytes with the installation's non-extractable ECDSA P-256 key;
+5. normalize the 64-byte P1363 result to base64url in the existing `SignatureEnvelope`; and
+6. import the receipt's SPKI public descriptor and verify the signature before encrypted storage.
+
+The signature is never inserted into the event core, so the core, event hash, linkage, receipt ID,
+and occurrence time remain unchanged. Adding Site confirmed preserves the earlier Attempted
+signature and uses the same installation public descriptor. An imported receipt keeps its original
+descriptor/signatures; a different installation may verify it but is not allowed to sign a later
+event as that identity.
+
 Chain-anchor payload:
 
 ```ts
@@ -173,6 +194,21 @@ Chain-anchor payload:
 ```
 
 `ChainAnchorMetadata` may later record the runtime chain ID, contract address, transaction hash, decimal block number, and anchoring time. It is outside the event core. A blockchain transaction alone does not change the lifecycle or derived status.
+
+## Private storage and portable wrappers
+
+`PrivateReceiptBundle`, `SUBMITTEDIT_ENCRYPTED_RECEIPT`, and
+`SUBMITTEDIT_RECEIPT_EXPORT` are extension storage/transport formats, not new lifecycle or receipt
+protocol layers. The private bundle contains the strict `Receipt` plus local operational capture
+context. Its storage envelope encrypts canonical bundle bytes with a distinct AES-256-GCM key and
+authenticates stable format, blob, receipt, receipt-schema, public-key, and key-version metadata.
+The plaintext local index contains only locators and minimal stage/origin/time metadata.
+
+The `.submittedit` export re-encrypts one validated bundle with an AES-256-GCM key derived from a
+user passphrase using PBKDF2-SHA-256, 600,000 iterations, and a random 128-bit salt. It never
+contains the installation private key or local per-receipt AES key. Import authenticates/decrypts
+the wrapper, then returns to this protocol boundary to recompute hashes/linkage and verify every
+extension signature before any local persistence.
 
 ## Linked lifecycle
 
@@ -206,7 +242,11 @@ The exact algorithm and domain strings are fixed in [decision 0003](DECISIONS/00
 
 `VerificationState` contains uniquely named checks with `NOT_RUN`, `PASSED`, or `FAILED`; parsing sorts those records by check name. A `VERIFIED` state requires a nonempty all-passed list and a timestamp; `FAILED` requires at least one failed check and a timestamp. Receipt validation additionally requires `SCHEMA`, `EVENT_HASH`, and `EVENT_LINK` for any verified chain, plus signature or chain checks when those envelope elements apply.
 
-The Goal 03 code does not trust a site response or chain anchor as authority evidence. Later verifier code is responsible for performing the actual cryptographic and chain checks before constructing a verified record.
+The protocol does not trust a site response or chain anchor as authority evidence. The current
+extension performs the extension-signature checks before accepting its local encrypted bundle, and
+the fictional authority endpoint verifies its own terminal binding. The later public verifier is
+still responsible for independently repeating all applicable cryptographic and chain checks before
+presenting a final verified record.
 
 ## Versioned vectors and runtime support
 

@@ -20,7 +20,7 @@ An onchain record does not override official agency records or establish legal t
 
 SubmittedIt is not affiliated with the IRS and does not provide legal or tax advice.
 
-The repository currently contains the Goal 09 integrity, deployment, fictional-portal, and
+The repository currently contains the integrity, deployment, fictional-portal, and
 privacy-first extension foundation: strict browser-safe receipt/event schemas, deterministic
 canonicalization and Keccak hashing, linked lifecycle validation, a tested append-only Solidity
 registry deployed and source-verified on Monad Testnet, a reviewed deployment manifest, a generated
@@ -28,17 +28,21 @@ typed contract-client read boundary, fixed Node/Chromium vectors, the reviewed i
 dynamic PostgreSQL demo portal with durable queued, Accepted, Rejected, and Pending outcomes, and a
 real Manifest V3 side panel with exact-origin opt-in, runtime-only standard-form capture,
 canonical local Attempted receipts, narrow deduplication, persistence across navigation/restart,
-and deliberate website-confirmation capture. A confirmation is bound to the originating tab and
-Attempted event, requires selected visible text plus explicit review, creates one canonical linked
-`SITE_CONFIRMED` event, and remains **Pending acceptance**. The fictional authority can produce
-real receipt-bound P-256 signatures for matching terminal event cores. Extension signing,
-encryption, relay behavior, public verification, and production product workflows are not
-implemented yet.
+and deliberate website-confirmation capture. Each installation owns a persistent non-extractable
+P-256 signing identity; every locally retained Attempted and Site confirmed event is signed and
+verified, and each complete private receipt bundle is encrypted with its own non-extractable
+AES-256-GCM key before durable storage. Passphrase-encrypted `.submittedit` export, strict
+clean-profile import, per-receipt deletion, and irreversible delete-all are implemented locally.
+A confirmation remains bound to the originating tab and Attempted event and remains **Pending
+acceptance**. The fictional authority can produce real receipt-bound P-256 signatures for matching
+terminal event cores. Encrypted upload, relay behavior, extension-side authority polling, public
+verification, and application-level Monad writes remain later work.
 
 See [the extension guide](docs/EXTENSION.md), [privacy boundary](docs/PRIVACY.md),
 [the demo portal guide](docs/DEMO_PORTAL.md), [product contract](docs/PRODUCT_CONTRACT.md),
 [receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md),
 [deployment runbook](docs/DEPLOYMENT.md), [threat model](docs/THREAT_MODEL.md),
+[security policy](SECURITY.md),
 [design system](docs/DESIGN_SYSTEM.md), [UX states](docs/UX_STATES.md),
 [reviewed wireframes](docs/WIREFRAMES.md), [copy deck](docs/COPY_DECK.md),
 [architecture](docs/ARCHITECTURE.md), and
@@ -61,7 +65,7 @@ The public manifest is [`deployments/monad-testnet.json`](deployments/monad-test
 
 ```text
 apps/web                 Next.js fictional filing portal, PostgreSQL APIs, and authority signer
-apps/extension           Exact-origin WXT capture and local Attempted/Site confirmed evidence
+apps/extension           Exact-origin capture plus signed, encrypted private receipt storage
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Generated registry ABI and strict anchor projection
 packages/ui              Shared identity metadata, CSS tokens, and brand assets
@@ -120,11 +124,12 @@ pnpm contract:abi:check
 ```
 
 `pnpm check` validates the deterministic deployment manifest/client export, formatting, icons,
-linting, strict types, extension capture/storage/message/privacy boundaries, PostgreSQL web tests,
-all workspace builds and package exports, the generated extension manifest/output, real-Chromium
-receipt-core parity, and a lightweight secret scan. `pnpm test:e2e` runs the filing portal
-scenarios, real persistent-Chromium extension permission/capture/navigation/deduplication/restart,
-selected-confirmation review, origin-change, and durable event-linkage checks, browser parity, web
+linting, strict types, extension capture/message/privacy boundaries, signing, encryption,
+migration and export/import behavior, PostgreSQL web tests, all workspace builds and package
+exports, the generated extension manifest/output, real-Chromium receipt-core parity, and a
+lightweight secret scan. `pnpm test:e2e` runs the filing portal scenarios and real
+persistent-Chromium extension permission, capture, navigation, restart, signature, ciphertext,
+clean-profile import, duplicate replacement, and deletion checks, plus browser parity, web
 entry-point checks, and Next route type generation. A real PostgreSQL database is required for
 both commands. Install the bundled Chromium once with
 `pnpm exec playwright install chromium`. See [the extension guide](docs/EXTENSION.md) and
