@@ -35,11 +35,15 @@ AES-256-GCM key before durable storage. Passphrase-encrypted `.submittedit` expo
 clean-profile import, per-receipt deletion, and irreversible delete-all are implemented locally.
 A confirmation remains bound to the originating tab and Attempted event and remains **Pending
 acceptance**. The fictional authority can produce real receipt-bound P-256 signatures for matching
-terminal event cores. Encrypted upload, relay behavior, extension-side authority polling, public
-verification, and application-level Monad writes remain later work.
+terminal event cores. The server now has a PostgreSQL encrypted-blob and signed-event relay
+foundation with durable idempotency, fee/abuse controls, recovery, and real local-Anvil contract
+tests. It is not hosted, has no real relayer wallet, and has sent no application transaction to
+Monad Testnet. Extension upload/progress, authority polling, and public verification remain later
+work.
 
 See [the extension guide](docs/EXTENSION.md), [privacy boundary](docs/PRIVACY.md),
 [the demo portal guide](docs/DEMO_PORTAL.md), [product contract](docs/PRODUCT_CONTRACT.md),
+[relay API](docs/RELAY.md), [relayer runbook](docs/RELAYER_RUNBOOK.md),
 [receipt protocol](docs/RECEIPT_SCHEMA.md), [contract reference](docs/CONTRACT.md),
 [deployment runbook](docs/DEPLOYMENT.md), [threat model](docs/THREAT_MODEL.md),
 [security policy](SECURITY.md),
@@ -64,7 +68,7 @@ The public manifest is [`deployments/monad-testnet.json`](deployments/monad-test
 ## Workspace
 
 ```text
-apps/web                 Next.js fictional filing portal, PostgreSQL APIs, and authority signer
+apps/web                 Filing portal, authority signer, encrypted blob API, and relay foundation
 apps/extension           Exact-origin capture plus signed, encrypted private receipt storage
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Generated registry ABI and strict anchor projection
@@ -111,6 +115,7 @@ pnpm install --frozen-lockfile
 export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/submittedit_test
 export TEST_DATABASE_URL=$DATABASE_URL
 pnpm check
+ANVIL_BIN="$HOME/.foundry/bin/anvil" FORGE_BIN="$HOME/.foundry/bin/forge" pnpm test:relay-local-chain
 pnpm test:e2e
 pnpm contract:deployment:check
 export MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
@@ -127,13 +132,17 @@ pnpm contract:abi:check
 linting, strict types, extension capture/message/privacy boundaries, signing, encryption,
 migration and export/import behavior, PostgreSQL web tests, all workspace builds and package
 exports, the generated extension manifest/output, real-Chromium receipt-core parity, and a
-lightweight secret scan. `pnpm test:e2e` runs the filing portal scenarios and real
+lightweight secret scan, including a web client-bundle signer audit. The separate
+`pnpm test:relay-local-chain` gate deploys the real registry to a clean Anvil chain with runtime-only
+ephemeral keys and proves transaction, revert, idempotency, and recovery behavior. `pnpm test:e2e` runs the filing portal scenarios and real
 persistent-Chromium extension permission, capture, navigation, restart, signature, ciphertext,
 clean-profile import, duplicate replacement, and deletion checks, plus browser parity, web
 entry-point checks, and Next route type generation. A real PostgreSQL database is required for
 both commands. Install the bundled Chromium once with
 `pnpm exec playwright install chromium`. See [the extension guide](docs/EXTENSION.md) and
-[the demo portal guide](docs/DEMO_PORTAL.md) for local setup and test details.
+[the demo portal guide](docs/DEMO_PORTAL.md) for local setup and test details. Relay configuration,
+PostgreSQL entities, local testing, and the disabled Monad smoke harness are documented in
+[the relay guide](docs/RELAY.md).
 Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a
 contract build, `pnpm contract:abi` regenerates the reviewed ABI and
 `pnpm contract:abi:check` proves it still matches compiler output.

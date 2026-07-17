@@ -52,11 +52,25 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install Monad Foundry for local relay tests
+        run: |
+          export RELAY_FOUNDRY_DIR="$RUNNER_TEMP/relay-monad-foundry"
+          echo "RELAY_FOUNDRY_DIR=$RELAY_FOUNDRY_DIR" >> "$GITHUB_ENV"
+          export FOUNDRY_DIR="$RELAY_FOUNDRY_DIR"
+          curl --fail --show-error --location https://foundry.category.xyz | bash
+          "$RELAY_FOUNDRY_DIR/bin/foundryup" --network monad
+
       - name: Install Chromium for extension tests
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Apply demo database migrations
+      - name: Apply web database migrations
         run: pnpm --filter @submittedit/web db:migrate
+
+      - name: Run real local-chain relay integration
+        run: >-
+          ANVIL_BIN="$RELAY_FOUNDRY_DIR/bin/anvil"
+          FORGE_BIN="$RELAY_FOUNDRY_DIR/bin/forge"
+          pnpm test:relay-local-chain
 
       - name: Run workspace checks
         run: pnpm check

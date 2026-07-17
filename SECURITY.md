@@ -31,6 +31,11 @@ The extension distinguishes four key roles:
 - Public verification keys are descriptors, not secrets. They verify signatures but cannot create
   new ones.
 
+The separate server relay foundation has one additional future production key role: a dedicated
+transaction signer supplied only through deployment secrets. It must never reuse the contract
+deployer or fictional-authority key. The current checkpoint creates no live relayer wallet and
+uses only ephemeral local-chain signers in tests.
+
 Never commit or log a private key, raw AES key, passphrase, authority secret, relayer/deployer
 wallet, `.env` file, real export, browser profile, database dump, or generated build artifact. The
 extension private key is never included in `.submittedit` packages. Import preserves the original
@@ -57,7 +62,10 @@ verified before import persistence.
 Non-extractable keys and encryption at rest do not make a compromised browser trustworthy.
 Malicious browser, operating-system, or altered extension code can invoke live keys or observe
 decrypted process memory. There is no cloud recovery, passphrase reset, cross-device sync, key
-rotation, encrypted upload, relay, or live share service in the current extension.
+rotation, encrypted upload, relay integration, or live share service in the current extension. A
+separate web-server foundation can persist an opaque AES-GCM envelope and validate a signed
+Attempted or Site confirmed event for a relay operation, but it cannot decrypt the envelope and is
+not yet connected to the extension.
 
 ## Product-truth boundary
 
@@ -65,4 +73,6 @@ Attempted and Site confirmed evidence remains Pending acceptance even when its l
 ciphertext are valid. A local signature authenticates an installation's event; it does not prove
 site honesty, authority acceptance, legal timeliness, identity, or an onchain record. Only a
 verified authoritative acknowledgment may support Accepted or Rejected. The current extension
-makes no relay, RPC, or Monad transaction.
+makes no relay, RPC, or Monad transaction. The relay foundation is local-test-only at this
+checkpoint: no production relayer wallet has been created or funded and no Monad transaction was
+sent.

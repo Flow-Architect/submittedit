@@ -16,8 +16,10 @@ user-selected website evidence, deletion-only review, origin-change consent, and
 canonical Site confirmed event that remains Pending acceptance. Goal 10 adds a persistent
 non-extractable installation identity, Goal 03-compatible signatures for
 local events, per-receipt AES-GCM ciphertext, staged plaintext migration, passphrase-encrypted
-`.submittedit` export/import, and key-aware deletion. Encrypted upload, relay, public verifier, and
-application-level live-chain workflows remain unimplemented.
+`.submittedit` export/import, and key-aware deletion. Goal 11 adds the server-only encrypted-blob
+and signed-event relay foundation, durable PostgreSQL transaction/idempotency/abuse state, and real
+local-chain execution. The extension does not call it yet, no real relayer wallet exists, and no
+application transaction has been sent to Monad Testnet. Public verification remains unimplemented.
 
 ## Workspace boundaries
 
@@ -77,9 +79,11 @@ identity. A fragment-only future-share helper exists, but no hosted blob or live
 The web application stores synthetic Goal 06 demo submissions, status histories, and receipt-bound
 authority signatures in PostgreSQL. It stores only a SHA-256 digest of each opaque public status
 token. The authority private key comes from server deployment secrets and never enters PostgreSQL,
-API responses, logs, or client bundles. The web application may later store encrypted blobs, relay
-state, transaction metadata, and narrowly scoped abuse-prevention data. Raw extension-captured form
-values must not enter server logs.
+API responses, logs, or client bundles. The web application also stores versioned opaque
+ciphertext, immutable relay arguments, prepared transaction hashes/nonces,
+confirmation/history state, keyed rate counters, daily fee reservations, and signer nonce
+allocation. It never stores a decryption key, plaintext receipt, signed request body, or relayer
+private key. Raw extension-captured form values must not enter server logs.
 
 ### Monad Testnet
 
@@ -100,7 +104,8 @@ The contract is permissionless: any address may submit a structurally valid anch
   The already-open granted tab receives the bundle immediately, future navigations receive it at
   `document_start`, and revocation unregisters/disposes it.
 - The Goal 06 data layer uses parameterized `postgres` tagged templates against PostgreSQL 17.
-  Migration `0001_demo_filing` is applied transactionally and recorded in `schema_migrations`.
+  Numbered migrations are applied transactionally and recorded in `schema_migrations`; Goal 11
+  adds `0002_relay_foundation` after `0001_demo_filing`.
 - Vitest covers deterministic unit, cryptographic, migration, and PostgreSQL integration checks.
   Playwright verifies the real portal/API lifecycle over HTTP and reproduces receipt vectors from
   the built ESM package in real Chromium. The extension Playwright path loads the production
@@ -221,10 +226,15 @@ The current extension creates, signs, verifies, and encrypts a canonical Attempt
 one likewise signed/encrypted user-approved Site confirmed event locally. Site confirmed remains
 Pending acceptance. Export/import is local; no ciphertext is uploaded. Later extension work may
 request the Goal 06 fictional authority's signature only after constructing a matching terminal
-event core. A future relay will verify signed evidence before accepting ciphertext or submitting an
-anchor request and will track confirmation without changing the event core. A future verifier will
+event core. The server relay now verifies local signed evidence, stores ciphertext opaquely,
+prechecks the real registry, and tracks local-chain transactions without changing the event core.
+Its deterministic prepared-transaction hash, PostgreSQL nonce allocation, event-hash lock, and fee
+reservation make concurrent/restarted execution recoverable. It currently accepts Attempted and
+Site confirmed only, has no extension caller or production wallet, and has not written to Monad
+Testnet. A future verifier will
 independently recompute event/signature checks, compare expected linkage and stage with confirmed
-contract state/logs, and account for chain confirmation. Goal 10 performs no Monad transaction. The
+contract state/logs, and account for chain confirmation. Goals 10 and the Goal 11 local checkpoint
+perform no application Monad transaction. The
 contract alone cannot make Accepted or Rejected truthful; those displayed receipt outcomes
 additionally require a verified authority signature. See
 [the contract reference](CONTRACT.md) and [threat model](THREAT_MODEL.md).

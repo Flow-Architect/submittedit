@@ -78,6 +78,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@submittedit/contract-client':
+        specifier: workspace:*
+        version: link:../../packages/contract-client
       '@submittedit/receipt-core':
         specifier: workspace:*
         version: link:../../packages/receipt-core
@@ -96,6 +99,9 @@ importers:
       react-dom:
         specifier: 19.2.7
         version: 19.2.7(react@19.2.7)
+      viem:
+        specifier: 2.55.2
+        version: 2.55.2(typescript@7.0.2)(zod@4.4.3)
       zod:
         specifier: 4.4.3
         version: 4.4.3

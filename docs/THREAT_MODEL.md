@@ -14,8 +14,11 @@ canonical linked Site confirmed event. The extension additionally owns a persist
 non-extractable P-256 installation identity, signs
 and verifies every retained local event, migrates plaintext receipts copy-on-write, encrypts each
 private bundle with its own AES-256-GCM key, and supports passphrase-encrypted export plus strict
-clean-profile import and deletion. Encrypted upload, relay, public verifier behavior, and
-application-level chain confirmation remain future work.
+clean-profile import and deletion. A separate server foundation now persists only versioned
+AES-GCM envelopes, verifies signed Attempted and Site confirmed events, and manages durable relay
+operations. It has been exercised with ephemeral keys against a local Anvil chain only. Extension
+integration, production relayer operations, authority-stage relay, public verification, and
+application-level Monad confirmation remain future work.
 
 The protected properties are:
 
@@ -61,7 +64,17 @@ The protected properties are:
   installation identity without deleting unrelated browser data;
 - Attempted cannot be displayed as Site confirmed without saved evidence, and neither Attempted nor
   Site confirmed can be displayed as Accepted, Rejected, verified, or onchain;
-- private receipt contents never enter contract inputs, state, logs, or errors.
+- private receipt contents never enter contract inputs, state, logs, or errors;
+- the relay cannot decrypt uploaded envelopes or accept a decryption key in a path, query, body,
+  database row, log, or client bundle;
+- relay contract arguments come only from a strictly parsed, hash-recomputed, validly signed event
+  bound to the same encrypted envelope, receipt, and extension public key;
+- one event hash maps to one immutable operation and one precomputed transaction hash, so retries,
+  concurrent requests, timeouts, and process restarts cannot create a different transaction;
+- fee reservations, durable rate counters, nonce allocation, balance reserve, attempt limits, and
+  terminal-state guards constrain relay abuse and replay; and
+- a relay result is not Confirmed until a mined receipt, expected contract event, and resulting
+  registry state all agree.
 
 ## Trust boundaries
 
@@ -76,10 +89,15 @@ confirmed core, and validates the two-event chain before storage. For each local
 recomputes the extension-signature payload, signs with its non-extractable P-256 key, verifies with
 the stored SPKI descriptor, and only then encrypts the complete private bundle under a distinct
 non-extractable AES-GCM key in IndexedDB. The Goal 06 fictional authority signs only a
-caller-proposed terminal event core whose acknowledgment exactly matches its PostgreSQL record. A
-future relay validates requests and submits transactions. Monad orders confirmed transactions. A
-future verifier independently recomputes hashes/signatures/linkage and compares them with
-canonical-chain state and logs.
+caller-proposed terminal event core whose acknowledgment exactly matches its PostgreSQL record.
+The separate relay server trusts neither the encrypted envelope nor caller metadata: it strictly
+parses the Goal 10 envelope and Goal 03 event, recomputes hashes, verifies the P-256 signature and
+SPKI fingerprint, binds both records, preflights registry state, and persists the operation before
+broadcast. Its dedicated transaction key is a server-only deployment secret and is distinct from
+the extension, fictional-authority, and deployer keys. This checkpoint uses only an ephemeral
+local-chain signer; no production relayer wallet exists and no Monad transaction was sent. Monad
+will order transactions only after a later production enablement. A future verifier independently
+recomputes hashes/signatures/linkage and compares them with canonical-chain state and logs.
 
 The contract trusts none of those actors for real-world truth. It validates only fixed-size arguments and stored lifecycle structure. Any address can call it, and transaction sender, extension-key identity, authority-key identity, receipt subject, website, and real-world authority are distinct concepts.
 
@@ -136,6 +154,22 @@ The contract trusts none of those actors for real-world truth. It validates only
 | Database failure or internal error leakage   | API errors fail closed with a generic 503 and no stack, SQL detail, connection string, or form body. A page error boundary states no outcome changed.                            | The demo is unavailable while PostgreSQL is unavailable; Goal 06 adds no failover or queue.                               |
 | Reset endpoint misuse                        | The reset route returns 404 in production and uses a timing-safe bearer comparison in development/test.                                                                          | A leaked development reset token can erase synthetic local/test rows. It must never be reused as a production credential. |
 
+## Relay foundation threats and controls
+
+| Threat                                       | Current control                                                                                                                                                                                                                                                                                     | Residual risk / limitation                                                                                                                                                                               |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Plaintext receipt disclosure                 | The blob route accepts the exact versioned Goal 10 AES-256-GCM envelope only. The server stores and returns ciphertext unchanged, has no decryption-key field, and rejects query parameters on retrieval.                                                                                           | Envelope metadata, ciphertext size, upload time, receipt ID, extension-key ID, and access patterns remain visible to the service. Browser-side decryption and share-secret delivery are not implemented. |
+| Forged or altered event                      | Strict `receipt-core` parsing, canonical event-hash recomputation, P-256/P1363 verification, SPKI SHA-256 fingerprinting, and envelope/event/key binding all run before any chain or fee call.                                                                                                      | A compromised extension key can sign malicious evidence. Signature validity proves key control, not website or filing truth.                                                                             |
+| Invalid lifecycle transition                 | The relay reads protocol version and receipt state, permits only Attempted and Site confirmed at this checkpoint, and constructs the reviewed contract-client arguments.                                                                                                                            | Preflight can race another permissionless sender. The mined receipt and post-state must still be reconciled; a conflict is reported, never rewritten.                                                    |
+| Duplicate, concurrent, or retried request    | PostgreSQL uniqueness on event hash and optional idempotency hash, row/advisory locks, immutable arguments, durable nonce allocation, and a persisted signed transaction hash make exact retries converge.                                                                                          | Database loss or operator corruption can impair recovery. Multi-region nonce ownership is not yet implemented.                                                                                           |
+| Timeout or RPC outage                        | The operation stores `SUBMITTING` before broadcast and retains the same raw transaction identity through `SUBMITTED`/`FAILED_RETRYABLE`; later reads or exact POST retries reconcile it. Poll interval, poll cap, and attempt cap bound automatic work.                                             | Provider outages delay state convergence. Operators still need monitored reconciliation and a reviewed multi-provider policy before production.                                                          |
+| Reverted or mismatched transaction           | Reverts persist as `REVERTED`. A successful receipt becomes `CONFIRMED` only after the expected registry log and direct state read agree; otherwise it fails closed. Terminal database transitions are immutable.                                                                                   | A chain reorganization after the configured confirmation target requires later verifier/reconciliation policy. One local confirmation is test convenience, not a production finality decision.           |
+| Gas or funding drain                         | The relay estimates the exact call, applies a bounded 10% gas-limit margin, reserves `gasLimit × maxFeePerGas` transaction cost, enforces daily budget and minimum balance, and moves the reservation to spent once mined. Monad charges against gas limit, so inflated estimates are not accepted. | Fee spikes can reduce availability. Funding, reserve delays, budget changes, and emergency disablement remain operator responsibilities.                                                                 |
+| Abuse and enumeration                        | Opaque 256-bit blob/status IDs, keyed-HMAC IP/public-key/receipt counters, bounded JSON, strict schemas, maximum attempts, and no list endpoint limit useful probing.                                                                                                                               | Distributed clients and stolen opaque IDs can still consume capacity. A deployment proxy must supply trustworthy client addressing before proxy mode is enabled.                                         |
+| Relayer-key compromise or key-role confusion | The signer is Node-only, loaded from `SUBMITTEDIT_RELAYER_PRIVATE_KEY`, absent from responses/logs/client bundles, and documented as separate from the deployer and authority. Startup fails closed when configuration is absent.                                                                   | Host or deployment-secret compromise can sign arbitrary permissionless calls. Rotation and incident response require operator action; the contract has no relayer allowlist or pause role.               |
+| Misleading status or logs                    | Public operation states distinguish validating, ready, submitting, submitted, retryable failure, confirmed, reverted, and final failure. Confirmed requires chain evidence. Structured logs allow only correlation ID, shortened hashes, state/result, timing, and numeric counters.                | The relay does not establish authority acceptance, legal timeliness, or private-content truth. A malicious UI can still mislabel API results.                                                            |
+| Accidental live-network execution            | The real integration harness deploys to an ephemeral local Anvil chain. The Monad smoke harness is disabled by default, refuses CI, requires an explicit acknowledgement phrase and separate secret/configuration, and is not run in this checkpoint.                                               | A future authorized operator can deliberately enable the smoke harness. That action spends funds and must follow the runbook and current network rules.                                                  |
+
 ## Contract threats and controls
 
 | Threat                                                             | Current control                                                                                                                              | Residual risk / required future handling                                                                                                                                                                                                                                                 |
@@ -169,6 +203,13 @@ scenario, operational timestamps/state, fictional references/reason, token diges
 receipt-bound public signature data. It does not contain the raw status token, request headers,
 user-agent, IP address, browser fingerprint, authority private key, extension key, database dump, or
 real tax document.
+
+The relay database is another separate offchain boundary. It stores the opaque encrypted envelope,
+public receipt/key identifiers needed to bind it, immutable privacy-safe contract arguments,
+durable transaction identity/state/history, keyed abuse counters, budget reservations, and nonce
+allocation. It stores no decryption key, plaintext event core, signature body, relayer private key,
+request headers, user-agent, raw client IP, browser fingerprint, or private form content. Its
+allowlisted operational logs use shortened hashes and never serialize request bodies.
 
 The extension's complete private bundle contains canonical Attempted and optional Site confirmed
 events plus bounded operational context. An Attempted event may contain ordinary submitted
@@ -246,6 +287,11 @@ verification, plaintext-storage absence, `.submittedit` export, wrong-passphrase
 clean-profile import, tamper/duplicate handling, and deletion—while preserving all Goal 07–09
 permission/capture/confirmation coverage and making zero non-fixture extension requests. The build
 audit requires signing/encryption/export machinery in the worker and rejects it in the page capture
-bundle. Goal 10 sends no Monad transaction. Native browser-chrome prompt appearance remains a
-focused manual review because headless page automation cannot accept browser toolbar prompts. A
-future production deployment would warrant independent review beyond hackathon testing.
+bundle. Goal 10 sends no Monad transaction. The Goal 11A relay checkpoint adds fresh PostgreSQL
+migration tests, strict envelope/event/signature tests, durable idempotency/rate/budget/nonce tests,
+timeout/restart/RPC/revert tests, client-bundle secret auditing, and an ephemeral real-Anvil suite
+that deploys the reviewed contract and inspects actual receipts and state. Its disabled Monad smoke
+harness is not run; no live relayer wallet is created or funded and no Monad transaction is sent.
+Native browser-chrome prompt appearance remains a focused manual review because headless page
+automation cannot accept browser toolbar prompts. A future production deployment would warrant
+independent review beyond hackathon testing.

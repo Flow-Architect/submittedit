@@ -163,8 +163,21 @@ The extension does not contact the fictional demo authority, a blob service, a r
 endpoint, Monad, an analytics service, or any third party in the current milestone. Export/import
 is local file handling. A tested helper can place a future share secret only in a URL fragment, but
 there is no share-link UI or upload; fragments must stay out of later server requests and logs.
-Future encrypted upload, relay, and verification features require separate endpoint, retention,
-key, and cryptographic reviews.
+A separate server relay foundation now exposes a reviewed opaque-ciphertext endpoint, but this
+extension does not call it. That service receives only the versioned encrypted envelope plus the
+minimum public signed-event material required for an anchor, rejects decryption keys, and stores no
+plaintext receipt. Goal 12 still requires explicit extension endpoint/consent/retention and
+fragment-key review before any browser upload.
+
+## Relay service privacy boundary
+
+The relay PostgreSQL schema contains opaque ciphertext, random public locators, receipt/event/key
+fingerprints intended for public anchoring, transaction metadata, state history, HMACed abuse
+scopes, and aggregate fee reservations. It does not contain plaintext event cores, form values,
+confirmation text, raw IP addresses, request bodies, extension/receipt AES keys, P-256 private
+keys, the relayer key, or credential-bearing URLs. Retrieval returns ciphertext unchanged and
+accepts no query/body decryption secret. Allowlisted logs shorten public hashes and omit
+ciphertext, signatures, public-key bodies, URLs, and SQL parameters.
 
 ## Browser and device limitations
 

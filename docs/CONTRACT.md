@@ -151,7 +151,7 @@ Failed calls do not mark an event anchored or change a receipt tip.
 
 Any address may submit a structurally valid event. There is no centralized relayer allowlist and no owner, access-control role, editor, delete/correct function, pause switch, proxy, upgrade mechanism, token, payment, fee, withdrawal, `delegatecall`, `tx.origin`, assembly, or arbitrary external call.
 
-This makes history independent of an admin but also means the contract cannot correct an accidentally or maliciously anchored fingerprint. Clients must use unpredictable receipt IDs, validate signed evidence before relaying, check current state immediately before submission, and treat signature/receipt verification as separate from structural inclusion.
+This makes history independent of an admin but also means the contract cannot correct an accidentally or maliciously anchored fingerprint. Clients must use unpredictable receipt IDs, validate signed evidence before relaying, check current state immediately before submission, and treat signature/receipt verification as separate from structural inclusion. The Goal 11 relay foundation performs those checks for Attempted and Site confirmed in local-chain tests; it is not yet a live Monad service.
 
 ## Deployment script
 
@@ -159,7 +159,7 @@ This makes history independent of an admin but also means the contract cannot co
 
 The build requires RPC configuration through `MONAD_TESTNET_RPC_URL`, pins EVM version `osaka`, and compiles with literal source metadata and no IPFS bytecode hash. MonadVision/Sourcify verified the deployed source/runtime match; Monadscan supplies a second public explorer view. See [the deployment runbook](DEPLOYMENT.md) for exact reproducible build and live-read commands.
 
-The dedicated deployer and any future application relayer are separate responsibilities. The deployer has no privileged contract role: the immutable registry has no owner or relayer allowlist.
+The dedicated deployer and application relayer are separate responsibilities. The deployer has no privileged contract role: the immutable registry has no owner or relayer allowlist. The current relay checkpoint uses an ephemeral local-chain signer only; no production relayer wallet has been created, funded, or used on Monad.
 
 ## Reproducible ABI
 
@@ -201,7 +201,7 @@ The committed Foundry snapshot provides regression signals for isolated test act
 | Terminal Authority accepted anchor |       83,210 |
 | Terminal Authority rejected anchor |       83,284 |
 
-Prerequisite state for linked cases is created in each test's `setUp` and excluded from the named test measurement. These values are test-level regression measurements, not fee quotes or guaranteed transaction gas limits. Monad charges according to the transaction gas limit, so future callers must estimate conservatively and avoid inflated limits.
+Prerequisite state for linked cases is created in each test's `setUp` and excluded from the named test measurement. These values are test-level regression measurements, not fee quotes or guaranteed transaction gas limits. Monad charges according to the transaction gas limit, so callers must estimate conservatively and avoid inflated limits. The local relay foundation estimates the exact call, adds only a bounded ten-percent gas-limit margin, and reserves `gasLimit × maxFeePerGas`; production policy remains a later manual checkpoint.
 
 ## Explicit limitations
 

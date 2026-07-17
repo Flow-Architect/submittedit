@@ -187,15 +187,18 @@ SQLite or an in-memory substitute.
 - The internal reset route is unavailable in production and requires a timing-safe bearer token in
   development/test.
 
-The demo does not implement user accounts, production abuse throttling, key rotation, encrypted
-receipt storage, relay submission, or public verification. The Goal 08 extension can independently
-capture the portal's standard form as a local Attempted event, but the portal does not create,
-receive, sign, encrypt, relay, or anchor that extension event.
+The demo does not implement user accounts, production abuse throttling, key rotation, or public
+verification. A separate Goal 11 server foundation now defines opaque encrypted-blob storage and a
+strict signed-event relay API, but the portal does not call it. The Goal 08 extension can
+independently capture the portal's standard form as a local Attempted event, but the portal does
+not create, receive, sign, encrypt, relay, or anchor that extension event.
 
 ## Why Goal 06 sends no Monad transaction
 
 Goal 06 proved the portal and fictional authority behavior before extension capture existed. Goal
-08 now creates a separate local Attempted event, but still performs no signing, relay, or Monad
-write. A later relay may submit privacy-safe event fingerprints only after it verifies real signed
-receipt evidence. Even then, an onchain record will not override authority records or prove legal
-timeliness.
+08 now creates a separate local Attempted event, but still performs no relay or Monad write. The
+Goal 11 relay foundation can submit privacy-safe event fingerprints only after it verifies real
+signed receipt evidence; it has so far been exercised only against a local ephemeral chain. No
+production relayer wallet exists and no Monad transaction occurred in this checkpoint. Even when
+production relay is enabled later, an onchain record will not override authority records or prove
+legal timeliness.

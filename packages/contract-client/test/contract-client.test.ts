@@ -21,6 +21,7 @@ import {
   SUBMITTEDIT_MONAD_TESTNET_CHAIN_ID,
   ZERO_BYTES32,
   createSubmissionReceiptRegistryAnchorRequest,
+  createSubmissionReceiptRegistryAnchorRequestForTarget,
   fromContractReceiptStage,
   submissionReceiptRegistryAbi,
   submissionReceiptRegistryDeployment,
@@ -93,6 +94,36 @@ describe("receipt-core lifecycle compatibility", () => {
       CONTRACT_RECEIPT_STAGES.ATTEMPTED,
     ]);
     expect(request.abi).toBe(submissionReceiptRegistryAbi);
+  });
+
+  it("supports an explicit local deployment without weakening the reviewed Monad helper", () => {
+    const localProjection = {
+      ...projection,
+      chainId: 31337,
+      contractAddress: "0x1000000000000000000000000000000000000001",
+    } satisfies ReceiptCoreChainAnchorProjection;
+    const local = createSubmissionReceiptRegistryAnchorRequestForTarget(
+      localProjection,
+      extensionKeyHash,
+      ZERO_BYTES32,
+      { address: localProjection.contractAddress, chainId: 31337 },
+    );
+    expect(local).toMatchObject({
+      address: localProjection.contractAddress,
+      chainId: 31337,
+      functionName: "anchorEvent",
+    });
+    expect(() =>
+      createSubmissionReceiptRegistryAnchorRequestForTarget(
+        localProjection,
+        extensionKeyHash,
+        ZERO_BYTES32,
+        { address: localProjection.contractAddress, chainId: 10143 },
+      ),
+    ).toThrow(/configured chain ID 10143/u);
+    expect(() =>
+      createSubmissionReceiptRegistryAnchorRequest(localProjection, extensionKeyHash, ZERO_BYTES32),
+    ).toThrow(/10143/u);
   });
 
   it("rejects extra projection fields instead of silently dropping private data", () => {

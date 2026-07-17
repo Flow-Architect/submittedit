@@ -70,6 +70,11 @@ export interface SubmissionReceiptRegistryAnchorRequest {
   readonly schemaVersion: `${number}.${number}`;
 }
 
+export interface SubmissionReceiptRegistryDeploymentTarget {
+  readonly address: `0x${string}`;
+  readonly chainId: number;
+}
+
 export class ContractProjectionError extends Error {
   override readonly name = "ContractProjectionError";
 }
@@ -125,6 +130,28 @@ export const createSubmissionReceiptRegistryAnchorRequest = (
   projection: ReceiptCoreChainAnchorProjection,
   extensionKeyHash: Bytes32Hex,
   authorityKeyHash: Bytes32Hex,
+): SubmissionReceiptRegistryAnchorRequest =>
+  createSubmissionReceiptRegistryAnchorRequestForTarget(
+    projection,
+    extensionKeyHash,
+    authorityKeyHash,
+    {
+      address: projection.contractAddress,
+      chainId: monadTestnet.id,
+    },
+  );
+
+/**
+ * Builds the same protocol-v1 anchor call for an explicitly configured registry deployment.
+ * The caller must supply a target independent of the untrusted projection. The original helper
+ * above preserves its Goal 03 Monad-chain semantics; this target-aware variant exists for real
+ * local-chain integration and server configuration checks.
+ */
+export const createSubmissionReceiptRegistryAnchorRequestForTarget = (
+  projection: ReceiptCoreChainAnchorProjection,
+  extensionKeyHash: Bytes32Hex,
+  authorityKeyHash: Bytes32Hex,
+  target: SubmissionReceiptRegistryDeploymentTarget,
 ): SubmissionReceiptRegistryAnchorRequest => {
   assertExactProjection(projection);
   if (!RECEIPT_SCHEMA_VERSION_PATTERN.test(projection.schemaVersion)) {
@@ -132,13 +159,24 @@ export const createSubmissionReceiptRegistryAnchorRequest = (
       `Unsupported receipt schema version: ${projection.schemaVersion}`,
     );
   }
-  if (projection.chainId !== monadTestnet.id) {
+  if (!Number.isSafeInteger(target.chainId) || target.chainId <= 0) {
+    throw new ContractProjectionError("Configured registry chainId must be a positive integer");
+  }
+  if (!isAddress(target.address, { strict: true })) {
+    throw new ContractProjectionError("Configured registry contractAddress must be valid");
+  }
+  if (projection.chainId !== target.chainId) {
     throw new ContractProjectionError(
-      `Expected Monad Testnet chain ID ${monadTestnet.id}, received ${projection.chainId}`,
+      `Expected configured chain ID ${target.chainId}, received ${projection.chainId}`,
     );
   }
   if (!isAddress(projection.contractAddress, { strict: true })) {
     throw new ContractProjectionError("contractAddress must be a checksummed or lowercase address");
+  }
+  if (projection.contractAddress.toLowerCase() !== target.address.toLowerCase()) {
+    throw new ContractProjectionError(
+      `Expected configured registry address ${target.address}, received ${projection.contractAddress}`,
+    );
   }
 
   assertBytes32(projection.receiptId, "receiptId");

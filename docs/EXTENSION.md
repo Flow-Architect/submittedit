@@ -35,8 +35,9 @@ browser-observed evidence for explicitly enabled standard HTML form submissions.
 that the user reviewed evidence the website displayed. Neither means authority acceptance.**
 Signing proves that the same local installation signed the stored event; encryption protects the
 private bundle at rest from casual plaintext inspection. Neither proves site honesty, authority
-acceptance, legal timeliness, or an onchain record. The extension does not upload a blob, call a
-relay, poll an authority, write to Monad, or expose the final public verifier in this milestone.
+acceptance, legal timeliness, or an onchain record. The extension does not upload a blob, call the
+separate server relay foundation, poll an authority, write to Monad, or expose the final public
+verifier in this milestone.
 
 ## Build and install unpacked
 
@@ -294,9 +295,10 @@ as the original signer.
 
 The code also defines a tested utility that can place a future sharing secret only after `#` in a
 URL. It rejects bases that already contain a query or fragment and verifies the secret cannot
-escape into the path or query. There is no share-link UI, upload, hosted blob, server request, or
-live sharing claim yet. A later hosted-blob milestone must keep the fragment out of HTTP requests;
-the eventual verifier would decrypt in the browser.
+escape into the path or query. There is no share-link UI, extension upload, server request, or live
+sharing claim yet. The separate Goal 11 server endpoint accepts only an already encrypted envelope
+and rejects query-held keys; later extension integration must keep the fragment out of every HTTP
+request, and the eventual verifier must decrypt in the browser.
 
 ## Deletion
 
@@ -401,5 +403,5 @@ Use only the fictional SubmittedIt Civic Filing Lab and synthetic values:
 - Website confirmation supports selected visible text for confirmation-page, inline-message, and
   redirect evidence. It does not capture screenshots, DOM snapshots, downloads, arbitrary page
   content, or cross-origin frames.
-- Automatic retention, reminders, encrypted upload, relay, Monad anchoring, extension-side
-  authority attachment, public verification, and live sharing remain later work.
+- Automatic retention, reminders, encrypted upload/relay integration, production Monad anchoring,
+  extension-side authority attachment, public verification, and live sharing remain later work.
