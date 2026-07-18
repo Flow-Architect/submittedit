@@ -20,6 +20,7 @@ import type {
 } from "@submittedit/contract-client";
 import { EncryptedBlobService } from "../lib/relay/blob-service";
 import { ViemRelayChainGateway } from "../lib/relay/chain";
+import { deriveExtensionKeyFingerprint } from "../lib/relay/crypto";
 import { ReceiptRelayService } from "../lib/relay/relay-service";
 import { createEphemeralLocalRelayerSigner } from "../lib/relay/signer";
 import type {
@@ -235,6 +236,7 @@ localDescribe("real local SubmissionReceiptRegistry relay", () => {
       extensionPublicKey: identity.publicKey,
       idempotencyKey: "anvil-attempted-idempotency",
     };
+    const preNonce = await gateway.getPendingNonce();
     const before = gateway.broadcastCount;
     const [first, duplicate] = await Promise.all([
       service.relay(body, { correlationId: "anvil-a", networkScope: "192.0.2.20" }),
@@ -257,13 +259,20 @@ localDescribe("real local SubmissionReceiptRegistry relay", () => {
     if (!registryLog) {
       throw new Error("Expected the real registry anchor log.");
     }
-    expect(
-      decodeEventLog({
-        abi: submissionReceiptRegistryAbi,
-        data: registryLog.data,
-        topics: registryLog.topics,
-      }).eventName,
-    ).toBe("ReceiptEventAnchored");
+    const decoded = decodeEventLog({
+      abi: submissionReceiptRegistryAbi,
+      data: registryLog.data,
+      topics: registryLog.topics,
+    });
+    expect(decoded.eventName).toBe("ReceiptEventAnchored");
+    expect(decoded.args).toMatchObject({
+      anchoredBy: relayerAddress,
+      eventCount: 1,
+      eventHash: attempted.eventHash,
+      extensionKeyHash: deriveExtensionKeyFingerprint(identity.publicKey).bytes32,
+      receiptId: attempted.core.receiptId,
+      stage: 1,
+    });
     const persisted = await testDatabase`
       SELECT state, transaction_hash, block_number, attempt_count
       FROM relay_operations
@@ -277,6 +286,15 @@ localDescribe("real local SubmissionReceiptRegistry relay", () => {
         transaction_hash: confirmed.transactionHash,
       },
     ]);
+    const [budget] = await testDatabase<
+      { readonly transaction_count: number }[]
+    >`SELECT transaction_count FROM relay_daily_budgets`;
+    const [nonce] = await testDatabase<
+      { readonly next_nonce: string }[]
+    >`SELECT next_nonce::text FROM relay_signer_nonces`;
+    expect(budget?.transaction_count).toBe(1);
+    expect(nonce?.next_nonce).toBe((preNonce + 1n).toString());
+    expect(await gateway.getPendingNonce()).toBe(preNonce + 1n);
 
     const attemptedState = (await publicClient.readContract({
       abi: submissionReceiptRegistryAbi,
@@ -286,6 +304,8 @@ localDescribe("real local SubmissionReceiptRegistry relay", () => {
     })) as readonly [number, Bytes32Hex, Bytes32Hex, bigint, number];
     expect(attemptedState[0]).toBe(1);
     expect(attemptedState[1]).toBe(attempted.eventHash);
+    expect(attemptedState[2]).toBe(deriveExtensionKeyFingerprint(identity.publicKey).bytes32);
+    expect(attemptedState[4]).toBe(1);
 
     const site = createSignedSiteConfirmedEvent(identity, attempted);
     const siteBlob = await store(site, identity.publicKey.keyId);

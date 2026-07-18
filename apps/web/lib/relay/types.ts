@@ -114,9 +114,23 @@ export interface PreparedRelayTransaction {
 export interface RelayTransactionReceipt {
   readonly blockNumber: bigint;
   readonly confirmations: number;
+  readonly contractEvent: RelayContractEvent | null;
   readonly contractEventFound: boolean;
   readonly status: "success" | "reverted";
   readonly transactionHash: Bytes32Hex;
+}
+
+export interface RelayContractEvent {
+  readonly anchoredAt: bigint;
+  readonly anchoredBy: `0x${string}`;
+  readonly authorityKeyHash: Bytes32Hex;
+  readonly eventCount: number;
+  readonly eventHash: Bytes32Hex;
+  readonly extensionKeyHash: Bytes32Hex;
+  readonly previousEventHash: Bytes32Hex;
+  readonly protocolVersion: number;
+  readonly receiptId: Bytes32Hex;
+  readonly stage: number;
 }
 
 export interface RelayChainGateway {

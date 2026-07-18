@@ -18,6 +18,7 @@ import type {
 import type { RelayerSigner } from "./signer";
 import type {
   RelayChainGateway,
+  RelayContractEvent,
   RelayContractState,
   RelayFeeQuote,
   RelayTransactionReceipt,
@@ -32,10 +33,13 @@ interface ViemRelayChainGatewayOptions {
   readonly signer: RelayerSigner;
 }
 
-const hasRegistryAnchorLog = (logs: readonly Log[], contractAddress: Address): boolean =>
-  logs.some((log) => {
+const findRegistryAnchorLog = (
+  logs: readonly Log[],
+  contractAddress: Address,
+): RelayContractEvent | null => {
+  for (const log of logs) {
     if (log.address.toLowerCase() !== contractAddress.toLowerCase()) {
-      return false;
+      continue;
     }
     try {
       const decoded = decodeEventLog({
@@ -43,11 +47,39 @@ const hasRegistryAnchorLog = (logs: readonly Log[], contractAddress: Address): b
         data: log.data,
         topics: log.topics,
       });
-      return decoded.eventName === "ReceiptEventAnchored";
+      if (decoded.eventName !== "ReceiptEventAnchored") {
+        continue;
+      }
+      const args = decoded.args as unknown as {
+        readonly anchoredAt: bigint;
+        readonly anchoredBy: Address;
+        readonly authorityKeyHash: Bytes32Hex;
+        readonly eventCount: number;
+        readonly eventHash: Bytes32Hex;
+        readonly extensionKeyHash: Bytes32Hex;
+        readonly previousEventHash: Bytes32Hex;
+        readonly protocolVersion: number;
+        readonly receiptId: Bytes32Hex;
+        readonly stage: number;
+      };
+      return {
+        anchoredAt: args.anchoredAt,
+        anchoredBy: args.anchoredBy,
+        authorityKeyHash: args.authorityKeyHash,
+        eventCount: Number(args.eventCount),
+        eventHash: args.eventHash,
+        extensionKeyHash: args.extensionKeyHash,
+        previousEventHash: args.previousEventHash,
+        protocolVersion: Number(args.protocolVersion),
+        receiptId: args.receiptId,
+        stage: Number(args.stage),
+      };
     } catch {
-      return false;
+      // An unrelated or malformed log is not registry confirmation evidence.
     }
-  });
+  }
+  return null;
+};
 
 export class ViemRelayChainGateway implements RelayChainGateway {
   readonly #chain;
@@ -212,10 +244,12 @@ export class ViemRelayChainGateway implements RelayChainGateway {
       pollingInterval: 100,
       timeout: options.timeoutMs,
     });
+    const contractEvent = findRegistryAnchorLog(receipt.logs, this.#contractAddress);
     return {
       blockNumber: receipt.blockNumber,
       confirmations: options.confirmations,
-      contractEventFound: hasRegistryAnchorLog(receipt.logs, this.#contractAddress),
+      contractEvent,
+      contractEventFound: contractEvent !== null,
       status: receipt.status,
       transactionHash: receipt.transactionHash as Bytes32Hex,
     };
@@ -227,10 +261,12 @@ export class ViemRelayChainGateway implements RelayChainGateway {
     try {
       const receipt = await this.#publicClient.getTransactionReceipt({ hash: transactionHash });
       const currentBlock = await this.#publicClient.getBlockNumber();
+      const contractEvent = findRegistryAnchorLog(receipt.logs, this.#contractAddress);
       return {
         blockNumber: receipt.blockNumber,
         confirmations: Number(currentBlock - receipt.blockNumber + 1n),
-        contractEventFound: hasRegistryAnchorLog(receipt.logs, this.#contractAddress),
+        contractEvent,
+        contractEventFound: contractEvent !== null,
         status: receipt.status,
         transactionHash: receipt.transactionHash as Bytes32Hex,
       };

@@ -13,9 +13,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "vitest run --config vitest.config.ts && pnpm test:relay-smoke-safety",
     "test:relay-local-chain": "pnpm --filter @submittedit/receipt-core build && pnpm --filter @submittedit/contract-client build && node scripts/test-relay-local-chain.mjs",
     "test:relay-monad-smoke": "pnpm --filter @submittedit/receipt-core build && pnpm --filter @submittedit/contract-client build && node scripts/test-relay-monad-smoke.mjs",
+    "test:relay-monad-smoke:dry-run": "bash scripts/test-relay-monad-smoke-wallet.sh --dry-run",
+    "test:relay-monad-smoke:wallet": "bash scripts/test-relay-monad-smoke-wallet.sh",
+    "test:relay-smoke-safety": "node scripts/relay-monad-smoke-guard.test.mjs",
     "typecheck": "pnpm typegen && tsc --noEmit",
     "typegen": "next typegen"
   },

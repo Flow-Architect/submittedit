@@ -19,6 +19,14 @@ const rules = [
     pattern: /(?:^|\n)\s*(?:DEPLOYER_)?PRIVATE_KEY\s*=\s*(?:0x)?[a-fA-F0-9]{64}\s*(?:\n|$)/,
   },
   {
+    label: "SubmittedIt relayer private-key assignment",
+    pattern: /SUBMITTEDIT_RELAYER_PRIVATE_KEY\s*=\s*(?:0x)?[a-fA-F0-9]{64}\s*(?:\n|$)/,
+  },
+  {
+    label: "raw EVM private-key argument",
+    pattern: /--private-key(?:=|\s+)(?:0x)?[a-fA-F0-9]{64}(?:\s|$)/,
+  },
+  {
     label: "demo authority private-key assignment",
     pattern: /SUBMITTEDIT_DEMO_AUTHORITY_PRIVATE_KEY\s*=\s*[A-Za-z0-9_-]{80,}/,
   },

@@ -31,10 +31,20 @@ The extension distinguishes four key roles:
 - Public verification keys are descriptors, not secrets. They verify signatures but cannot create
   new ones.
 
-The separate server relay foundation has one additional future production key role: a dedicated
-transaction signer supplied only through deployment secrets. It must never reuse the contract
-deployer or fictional-authority key. The current checkpoint creates no live relayer wallet and
-uses only ephemeral local-chain signers in tests.
+The separate server relay foundation has one additional key role: the dedicated low-value Monad
+Testnet account `submittedit-relayer`. It must never reuse the contract deployer or
+fictional-authority key. Its local source is an encrypted Foundry keystore; repository code,
+automated tests, and ordinary production startup neither open nor copy it. Tests generate ephemeral
+keys at runtime.
+
+The disabled one-time Testnet smoke runner is the only local path that may later decrypt this key.
+After explicit operator authorization, Foundry prompts through the TTY and writes the key only into
+an anonymous pipe connected to smoke-process FD 3. The key is not placed in an argument, password
+file, `.env`, shell history, Git, log, result file, or another environment variable. FD 3 is read
+once and immediately closed; the input buffer is overwritten after the Viem account is built.
+Private material still exists briefly in process memory, and JavaScript cannot promise physical
+zeroization. This compromise is Testnet-only. A hosted relay must use a deployment secret manager,
+KMS, or reviewed remote signer and a separate production abuse-control secret.
 
 Never commit or log a private key, raw AES key, passphrase, authority secret, relayer/deployer
 wallet, `.env` file, real export, browser profile, database dump, or generated build artifact. The
@@ -73,6 +83,6 @@ Attempted and Site confirmed evidence remains Pending acceptance even when its l
 ciphertext are valid. A local signature authenticates an installation's event; it does not prove
 site honesty, authority acceptance, legal timeliness, identity, or an onchain record. Only a
 verified authoritative acknowledgment may support Accepted or Rejected. The current extension
-makes no relay, RPC, or Monad transaction. The relay foundation is local-test-only at this
-checkpoint: no production relayer wallet has been created or funded and no Monad transaction was
-sent.
+makes no relay, RPC, or Monad transaction. The server foundation and a separately funded low-value
+Testnet relayer exist, but the live smoke command remains disabled and has not been run. No Monad
+transaction was signed or sent during this safety checkpoint.

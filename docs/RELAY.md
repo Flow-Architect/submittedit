@@ -7,6 +7,10 @@ ciphertext and relays verified `ATTEMPTED` and `SITE_CONFIRMED` fingerprints thr
 `SubmissionReceiptRegistry` on a local Anvil-compatible chain. It is not hosted and has not sent a
 Monad Testnet transaction. The extension does not call these APIs until Goal 12.
 
+The separately created low-value Monad Testnet account `submittedit-relayer` remains in its local
+encrypted Foundry keystore. This checkpoint hardens, but does not execute, the one-time live smoke
+path. The production relay remains disabled and unhosted.
+
 No route decrypts a receipt, accepts a decryption key, creates an authority outcome, or changes the
 Goal 03 event/signature format. Attempted and Site confirmed remain Pending acceptance.
 
@@ -190,32 +194,36 @@ reviewed numbered files in lexical order.
 Committed environment examples contain names and non-secret defaults only. A later server
 deployment must supply these through its secret/configuration boundary:
 
-| Variable                                          | Purpose                                                                    |
-| ------------------------------------------------- | -------------------------------------------------------------------------- |
-| `DATABASE_URL`                                    | PostgreSQL connection; never falls back to memory or SQLite                |
-| `SUBMITTEDIT_RELAY_ENABLED`                       | Explicit kill switch; remains `false` for this checkpoint                  |
-| `SUBMITTEDIT_RELAY_RPC_URL`                       | Server-only HTTP(S) RPC endpoint                                           |
-| `SUBMITTEDIT_RELAY_CHAIN_ID`                      | `10143` in production; local tests use `31337` by direct injection         |
-| `SUBMITTEDIT_RELAY_CONTRACT_ADDRESS`              | Exact reviewed registry address in production                              |
-| `SUBMITTEDIT_RELAYER_PRIVATE_KEY`                 | Dedicated server-only transaction key; never the deployer or authority key |
-| `SUBMITTEDIT_RELAY_ABUSE_HASH_KEY`                | Server-only entropy for HMACed abuse scopes                                |
-| `SUBMITTEDIT_RELAY_DAILY_BUDGET_WEI`              | Maximum UTC reserved plus spent transaction cost                           |
-| `SUBMITTEDIT_RELAY_MINIMUM_BALANCE_WEI`           | Protected post-reservation operating balance                               |
-| `SUBMITTEDIT_RELAY_LOW_BALANCE_WEI`               | Categorical health threshold                                               |
-| `SUBMITTEDIT_RELAY_CONFIRMATIONS`                 | Required receipt confirmation count                                        |
-| `SUBMITTEDIT_RELAY_CONFIRMATION_TIMEOUT_MS`       | Bounded wait for one submitted hash                                        |
-| `SUBMITTEDIT_RELAY_CONFIRMATION_POLL_INTERVAL_MS` | Durable reconciliation lease interval                                      |
-| `SUBMITTEDIT_RELAY_MAX_ATTEMPTS_PER_EVENT`        | Same-transaction broadcast cap                                             |
-| `SUBMITTEDIT_RELAY_MAX_CONFIRMATION_POLLS`        | Automatic status-reconciliation cap                                        |
-| `SUBMITTEDIT_RELAY_RATE_WINDOW_SECONDS`           | PostgreSQL fixed-window duration                                           |
-| `SUBMITTEDIT_RELAY_IP_RATE_LIMIT`                 | Requests per keyed network scope/window                                    |
-| `SUBMITTEDIT_RELAY_PUBLIC_KEY_RATE_LIMIT`         | Requests per extension-key digest/window                                   |
-| `SUBMITTEDIT_RELAY_RECEIPT_RATE_LIMIT`            | Requests per receipt/window                                                |
-| `SUBMITTEDIT_RELAY_TRUST_PROXY`                   | Accept the first forwarded client scope only behind a reviewed proxy       |
+| Variable                                          | Purpose                                                                |
+| ------------------------------------------------- | ---------------------------------------------------------------------- |
+| `DATABASE_URL`                                    | PostgreSQL connection; never falls back to memory or SQLite            |
+| `SUBMITTEDIT_RELAY_ENABLED`                       | Explicit kill switch; remains `false` for this checkpoint              |
+| `SUBMITTEDIT_RELAY_RPC_URL`                       | Server-only HTTP(S) RPC endpoint                                       |
+| `SUBMITTEDIT_RELAY_CHAIN_ID`                      | `10143` in production; local tests use `31337` by direct injection     |
+| `SUBMITTEDIT_RELAY_CONTRACT_ADDRESS`              | Exact reviewed registry address in production                          |
+| `SUBMITTEDIT_RELAYER_PRIVATE_KEY`                 | Future hosted secret-manager input; never a local smoke-shell variable |
+| `SUBMITTEDIT_RELAY_ABUSE_HASH_KEY`                | Server-only entropy for HMACed abuse scopes                            |
+| `SUBMITTEDIT_RELAY_DAILY_BUDGET_WEI`              | Maximum UTC reserved plus spent transaction cost                       |
+| `SUBMITTEDIT_RELAY_MINIMUM_BALANCE_WEI`           | Protected post-reservation operating balance                           |
+| `SUBMITTEDIT_RELAY_LOW_BALANCE_WEI`               | Categorical health threshold                                           |
+| `SUBMITTEDIT_RELAY_CONFIRMATIONS`                 | Required receipt confirmation count                                    |
+| `SUBMITTEDIT_RELAY_CONFIRMATION_TIMEOUT_MS`       | Bounded wait for one submitted hash                                    |
+| `SUBMITTEDIT_RELAY_CONFIRMATION_POLL_INTERVAL_MS` | Durable reconciliation lease interval                                  |
+| `SUBMITTEDIT_RELAY_MAX_ATTEMPTS_PER_EVENT`        | Same-transaction broadcast cap                                         |
+| `SUBMITTEDIT_RELAY_MAX_CONFIRMATION_POLLS`        | Automatic status-reconciliation cap                                    |
+| `SUBMITTEDIT_RELAY_RATE_WINDOW_SECONDS`           | PostgreSQL fixed-window duration                                       |
+| `SUBMITTEDIT_RELAY_IP_RATE_LIMIT`                 | Requests per keyed network scope/window                                |
+| `SUBMITTEDIT_RELAY_PUBLIC_KEY_RATE_LIMIT`         | Requests per extension-key digest/window                               |
+| `SUBMITTEDIT_RELAY_RECEIPT_RATE_LIMIT`            | Requests per receipt/window                                            |
+| `SUBMITTEDIT_RELAY_TRUST_PROXY`                   | Accept the first forwarded client scope only behind a reviewed proxy   |
 
 Production runtime rejects any chain/address other than the reviewed Monad Testnet deployment and
 fails closed when the signer, HMAC key, RPC, budget, or balance policy is absent or malformed. No
 `NEXT_PUBLIC_` variable contains a relay signer or server secret.
+
+The ordinary production constructor does not accept `SUBMITTEDIT_RELAYER_PRIVATE_KEY_FD`. The
+descriptor path below exists only for the explicit one-time Testnet smoke process; it does not
+weaken the future hosting-secret boundary.
 
 ## Local validation
 
@@ -255,11 +263,64 @@ contains the local PostgreSQL 17 container setup.
 
 ## Disabled Monad Testnet smoke harness
 
-`pnpm test:relay-monad-smoke` is disabled by default, refuses ordinary CI, requires an explicit
-danger confirmation, chain ID `10143`, the exact verified address, a dedicated test database, RPC,
-abuse secret, budget/balance settings, and the future separate relayer secret. It creates one fresh
-development-only Attempted event, prechecks, sends at most one transaction, and checks receipt plus
-contract state. It must not run until the manual Goal 11 relayer-wallet checkpoint is authorized.
+The reviewed operator entry point is `pnpm test:relay-monad-smoke:wallet`. It remains disabled by
+default and must not run until Bryan explicitly authorizes the one transaction. It is not an
+ordinary test and refuses CI, Mainnet, a different contract, a different account name, a missing
+expected address, an unsafe database, or an attempt cap other than one.
+
+The transaction-free readiness check is:
+
+```bash
+SUBMITTEDIT_MONAD_SMOKE_CONFIRM=I_UNDERSTAND_THIS_SENDS_ONE_DEVELOPMENT_TRANSACTION \
+SUBMITTEDIT_RELAYER_EXPECTED_ADDRESS=0x63314854E3e5366aF1155B72c1d730d9400397eF \
+pnpm test:relay-monad-smoke:dry-run
+```
+
+Dry-run checks the installed Foundry wallet help without selecting an account, validates the exact
+chain/runtime/protocol and public relayer EOA/balance/nonce through read-only RPC, validates the
+disposable database plan, and reports `walletAccessed: false` and `wouldSendTransaction: false`. It
+does not start Docker, open a keystore, prompt for a password, read FD 3, sign, or broadcast.
+
+When separately authorized, Bryan will run the same two non-secret environment assignments with:
+
+```bash
+pnpm test:relay-monad-smoke:wallet
+```
+
+The runner uses only Foundry account name `submittedit-relayer`; `submittedit-deployer` is forbidden.
+Foundry prompts for the encrypted-keystore password through its normal TTY behavior. No password
+argument, password file, `.env`, or plaintext key file is accepted. Foundry's private-key stdout is
+connected directly to anonymous FD 3. The launcher forwards only FD 3 to the single-threaded
+explicit Vitest process, closes its own descriptor immediately, and the signer reads and closes the
+test descriptor exactly once. The key is never printed, logged, serialized, returned, copied to an
+environment variable, or persisted. Raw key bytes necessarily exist briefly in the pipe and signer
+memory; the input buffer and local string reference are cleared after account construction, but
+JavaScript cannot guarantee physical memory zeroization.
+
+The smoke process requires `SUBMITTEDIT_RELAYER_EXPECTED_ADDRESS`, derives the address from the
+supplied key, and aborts before database/nonce reservation, signing, or any RPC write on mismatch.
+It generates the abuse-control HMAC key from 32 random bytes inside that process; production still
+requires its real abuse secret through hosting configuration.
+
+The runner creates only `submittedit_goal11_smoke_test` at `127.0.0.1:55432` in a PostgreSQL 17
+tmpfs container. `DATABASE_URL` and `TEST_DATABASE_URL` must both exist and be byte-for-byte equal;
+the direct smoke launcher rechecks the exact protocol, host, port, and test-only database name
+before Vitest can migrate, truncate, or connect. Cleanup traps are installed before Docker starts.
+They close FD 3, wait for the Foundry producer, remove the tmpfs container and public result file,
+unset smoke variables, and run repository/residue checks.
+
+Each run creates a random receipt, extension identity, event, ciphertext key/IV, blob, and
+idempotency key. Before relay it proves the receipt is empty and event unanchored. The relay method
+is invoked exactly once with `SUBMITTEDIT_RELAY_MAX_ATTEMPTS_PER_EVENT=1`; a transport ambiguity may
+only perform a read lookup for the already-derived hash. Post-run checks require one operation, one
+attempt, one budget transaction, one transaction hash, successful receipt, the exact decoded
+registry event, Attempted state/hash/key/count, global anchoring, durable and live nonce increments
+of exactly one, and the protected final balance. Any mismatch fails closed; no second transaction
+is created.
+
+This anonymous-pipe design is a narrowly reviewed Testnet smoke compromise, not the long-term
+production signer architecture. Hosting must use a secret manager, KMS, hardware/remote signer, or
+equivalent reviewed boundary. Never reuse `submittedit-deployer`.
 
 ## Stable failures
 

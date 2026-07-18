@@ -2,48 +2,23 @@
 
 ## Current status
 
-Only the local relay foundation exists. No real relayer wallet, relayer secret, faucet request,
-funding, hosted deployment, or SubmittedIt application transaction exists on Monad Testnet from
-this checkpoint. The opt-in smoke harness must remain disabled.
+The local relay foundation and a separately managed low-value Monad Testnet relayer now exist. The
+public relayer address is `0x63314854E3e5366aF1155B72c1d730d9400397eF`; its independently
+reported finalized balance at this safety checkpoint is `5 MON`, with nonce zero. Its encrypted
+Foundry account remains local and was not opened by this correction. There is no hosted deployment
+or SubmittedIt application transaction on Monad Testnet. The opt-in smoke harness remains disabled.
 
 ## Identity separation
 
-The future wallet name is exactly `submittedit-relayer`. Never reuse `submittedit-deployer`: the
+The wallet name is exactly `submittedit-relayer`. Never reuse `submittedit-deployer`: the
 deployer established immutable public deployment history, while the relayer is a low-value,
 replaceable application gas payer with no privileged contract role. Combining them needlessly
 expands exposure and makes incident attribution harder.
 
-Wallet creation is a later manual checkpoint. First verify the installed Foundry version and the
-current help for its encrypted keystore command. Do not copy a command from stale documentation,
-do not pass a password/private key on a command line, and do not use an unencrypted raw-key file.
-The operator will create the named encrypted account only after Bryan authorizes that checkpoint.
-
-The installed `cast 1.7.1-monad-v1.0.0` help was read at this code checkpoint without listing or
-opening any keystore. At the later authorized checkpoint, repeat only these non-mutating preflights:
-
-```bash
-"$HOME/.foundry/bin/cast" --version
-"$HOME/.foundry/bin/cast" wallet new --help
-"$HOME/.foundry/bin/cast" wallet address --help
-test ! -e "$HOME/.foundry/keystores/submittedit-relayer"
-```
-
-If the help still confirms that `wallet new [PATH] [ACCOUNT_NAME]` creates an encrypted JSON
-keystore with a hidden password prompt, the exact later creation sequence is:
-
-```bash
-umask 077
-install -d -m 700 "$HOME/.foundry/keystores"
-"$HOME/.foundry/bin/cast" wallet new "$HOME/.foundry/keystores" submittedit-relayer
-```
-
-Do not add `--force`, `--unsafe-password`, or a command-line private key. Do not run that sequence
-until Bryan explicitly authorizes the manual checkpoint. After creation, derive only the public
-address through the hidden keystore-password prompt:
-
-```bash
-"$HOME/.foundry/bin/cast" wallet address --account submittedit-relayer
-```
+Do not recreate, overwrite, list, inspect, export, or probe the existing encrypted account. The
+installed `cast 1.7.1-monad-v1.0.0` help may be read without account selection. No operator command
+may use `--force`, `--unsafe-password`, `--password`, `--password-file`, `--private-key`, a mnemonic,
+or an unencrypted raw-key file.
 
 ## Secret boundary
 
@@ -58,23 +33,64 @@ Production startup fails closed unless relay enablement, chain/address, RPC, sig
 daily budget, reserve/low-balance thresholds, and confirmation policy are valid. The verified
 Monad Testnet address and chain ID are additionally hard-checked in production.
 
+The one-time local smoke is a separate boundary. It rejects the production raw-key environment
+variable and accepts only `SUBMITTEDIT_RELAYER_PRIVATE_KEY_FD=3` in the explicit non-CI smoke
+process. It also requires a separately supplied expected public address and generates its HMAC key
+inside that process. Production refuses FD input and still requires its real hosting secrets.
+
 ## Funding and balance policy
 
-Fund only the amount needed for bounded Testnet operation after the named address is independently
-recorded. Monad uses a delayed state view, so wait at least three blocks after funding before the
-first send. Keep the configured reserve at or above the operator policy; Monad's EOA reserve rules
-use a 10 MON floor and low-balance accounts can send only about once per three blocks. Health reports
-only `EMPTY`, `LOW`, or `HEALTHY`, never an exact balance.
+The relayer has already been funded manually. Do not fund it again during this safety checkpoint.
+Monad uses a three-block delayed state view and low-balance EOAs can send only about once per three
+blocks. The smoke therefore reads finalized funding state, requires three receipt confirmations,
+and permits exactly one transaction. Health reports only `EMPTY`, `LOW`, or `HEALTHY`, never an
+exact balance.
 
-Use the official faucet only in the later authorized checkpoint and only for `submittedit-relayer`.
-Never request funds for, export, unlock, inspect, or reuse `submittedit-deployer`. Record the public
-funding transaction as operations evidence only after independent RPC/explorer verification.
+Never request funds for, export, unlock, inspect, or reuse `submittedit-deployer`. Never paste a
+keystore password, private key, or mnemonic into a faucet, explorer, issue, or log.
 
-The later funding sequence is operational, not part of this checkpoint: verify the configured RPC
-returns chain ID `10143`; submit only the new public relayer address to the official Monad Testnet
-faucet; record the faucet result; wait at least three blocks for delayed state visibility; then read
-the public balance at `latest` and `finalized` before enabling the relay. Never paste a keystore
-password, private key, or mnemonic into a faucet or explorer.
+## One-time Testnet smoke
+
+The reviewed readiness command is transaction-free:
+
+```bash
+SUBMITTEDIT_MONAD_SMOKE_CONFIRM=I_UNDERSTAND_THIS_SENDS_ONE_DEVELOPMENT_TRANSACTION \
+SUBMITTEDIT_RELAYER_EXPECTED_ADDRESS=0x63314854E3e5366aF1155B72c1d730d9400397eF \
+pnpm test:relay-monad-smoke:dry-run
+```
+
+It reads Foundry help and public chain/runtime/protocol/EOA/balance/nonce state only. It does not
+select an account, open a keystore, start PostgreSQL, prompt, sign, or broadcast. A passing dry-run
+is readiness evidence, not authorization to spend.
+
+Only after Bryan separately authorizes the transaction, use the same two non-secret assignments
+with:
+
+```bash
+pnpm test:relay-monad-smoke:wallet
+```
+
+The runner fixes the account name to `submittedit-relayer`. Foundry obtains the password through
+its normal TTY prompt and writes the decrypted key directly into an anonymous pipe. No password or
+key enters an argument, password file, `.env`, shell history, log, result file, or environment
+variable. The smoke signer reads FD 3 exactly once, closes it, verifies that the derived checksum
+address equals the expected address, builds the Viem account, and clears its local input buffer and
+string reference. The raw key still exists briefly in process memory; JavaScript cannot guarantee
+physical zeroization. This is a Testnet-only compromise. Hosted operation must use a secret manager,
+KMS, or reviewed remote signer.
+
+Before any migration or test setup, both database variables must be present, byte-identical, and
+equal to the reviewed local tmpfs database at
+`127.0.0.1:55432/submittedit_goal11_smoke_test`. The runner installs cleanup traps before Docker,
+applies the reviewed migrations, sets the attempt cap to one, and invokes the relay method once.
+Transport ambiguity permits only read-only lookup of the already-derived transaction hash.
+
+The test first requires a random receipt to be empty and its random event unanchored. Afterward it
+requires one operation, one attempt, one budget transaction, one distinct transaction hash, a
+successful exact-contract event, Attempted stage/hash/key/count, `isAnchored`, durable/live nonce
+increments of one, and the protected final balance. Cleanup closes FD 3, waits for the Foundry
+producer, removes the tmpfs database and temporary public result, unsets smoke variables, checks for
+child processes, and reruns repository secret/ignore/clean-tree checks. Any mismatch fails closed.
 
 ## Budget and emergency disable
 

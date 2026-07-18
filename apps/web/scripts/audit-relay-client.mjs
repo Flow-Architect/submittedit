@@ -5,8 +5,11 @@ import { fileURLToPath } from "node:url";
 const staticDirectory = fileURLToPath(new URL("../.next/static/", import.meta.url));
 const forbidden = [
   "SUBMITTEDIT_RELAYER_PRIVATE_KEY",
+  "SUBMITTEDIT_RELAYER_PRIVATE_KEY_FD",
+  "SUBMITTEDIT_RELAY_ABUSE_HASH_KEY",
   "SUBMITTEDIT_SERVER_RELAYER_SIGNER_V1",
   "privateKeyToAccount",
+  "createMonadSmokeRelayerSigner",
   "createProductionRelayerSigner",
 ];
 

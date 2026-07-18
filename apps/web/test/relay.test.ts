@@ -190,6 +190,14 @@ describe("signed event validation and durable relay", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ attempt_count: 1, state: "CONFIRMED" });
     expect(rows[0]?.transaction_hash).toBe(retry.transactionHash);
+    const [budget] = await testDatabase<
+      { readonly transaction_count: number }[]
+    >`SELECT transaction_count FROM relay_daily_budgets`;
+    const [nonce] = await testDatabase<
+      { readonly next_nonce: string }[]
+    >`SELECT next_nonce::text FROM relay_signer_nonces`;
+    expect(budget?.transaction_count).toBe(1);
+    expect(nonce?.next_nonce).toBe("1");
     await expect(service.getOperation(first.statusToken)).resolves.toMatchObject({
       state: "CONFIRMED",
       transactionHash: retry.transactionHash,

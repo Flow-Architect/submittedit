@@ -291,10 +291,26 @@ export class MockRelayChain implements RelayChainGateway {
     ) as {
       readonly args: readonly [Bytes32Hex, Bytes32Hex, Bytes32Hex, Bytes32Hex, Bytes32Hex, number];
     };
-    const [receiptId, eventHash, , extensionKeyHash, , stage] = decoded.args;
+    const [receiptId, eventHash, previousEventHash, extensionKeyHash, authorityKeyHash, stage] =
+      decoded.args;
+    const eventCount = (this.states.get(receiptId)?.eventCount ?? 0) + 1;
     const receipt: RelayTransactionReceipt = {
       blockNumber: BigInt(this.broadcastCount),
       confirmations: 1,
+      contractEvent: this.forceRevert
+        ? null
+        : {
+            anchoredAt: BigInt(this.broadcastCount),
+            anchoredBy: "0x2000000000000000000000000000000000000002",
+            authorityKeyHash,
+            eventCount,
+            eventHash,
+            extensionKeyHash,
+            previousEventHash,
+            protocolVersion: 1,
+            receiptId,
+            stage,
+          },
       contractEventFound: !this.forceRevert,
       status: this.forceRevert ? "reverted" : "success",
       transactionHash: transaction.hash,
@@ -308,7 +324,7 @@ export class MockRelayChain implements RelayChainGateway {
       const prior = this.states.get(receiptId);
       this.states.set(receiptId, {
         currentStage: stage,
-        eventCount: (prior?.eventCount ?? 0) + 1,
+        eventCount: prior ? prior.eventCount + 1 : 1,
         extensionKeyHash,
         isEventAnchored: true,
         latestEventHash: eventHash,
