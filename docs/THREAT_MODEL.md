@@ -292,9 +292,13 @@ migration tests, strict envelope/event/signature tests, durable idempotency/rate
 timeout/restart/RPC/revert tests, client-bundle secret auditing, and an ephemeral real-Anvil suite
 that deploys the reviewed contract and inspects actual receipts and state. The later smoke-safety
 checkpoint adds FD-only synthetic signer tests, expected-address/database/one-attempt guards, exact
-post-run evidence assertions, a cleanup-safe operator runner, and a transaction-free live dry-run.
-The manually created/funded Testnet relayer keystore is not opened; the smoke harness is not run and
-no Monad transaction is signed or sent.
+post-run evidence assertions, and a cleanup-safe operator runner. The one-time live smoke then
+anchored exactly one synthetic development-only Attempted event. Its passing test asserted one
+operation/attempt/budget transaction/hash/nonce advance before disposable-database cleanup. The
+sender paths are now retired; a bounded Node parser replaces the undeclared host `rg` postflight,
+and signer-free read-only reconciliation checks the exact public transaction, event, contract
+state, nonce, and protected balance. This evidence is not application or verifier data, a real
+filing, or an authority acknowledgment.
 Native browser-chrome prompt appearance remains a focused manual review because headless page
 automation cannot accept browser toolbar prompts. A future production deployment would warrant
 independent review beyond hackathon testing.

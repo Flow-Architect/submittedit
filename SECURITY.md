@@ -37,14 +37,11 @@ fictional-authority key. Its local source is an encrypted Foundry keystore; repo
 automated tests, and ordinary production startup neither open nor copy it. Tests generate ephemeral
 keys at runtime.
 
-The disabled one-time Testnet smoke runner is the only local path that may later decrypt this key.
-After explicit operator authorization, Foundry prompts through the TTY and writes the key only into
-an anonymous pipe connected to smoke-process FD 3. The key is not placed in an argument, password
-file, `.env`, shell history, Git, log, result file, or another environment variable. FD 3 is read
-once and immediately closed; the input buffer is overwritten after the Viem account is built.
-Private material still exists briefly in process memory, and JavaScript cannot promise physical
-zeroization. This compromise is Testnet-only. A hosted relay must use a deployment secret manager,
-KMS, or reviewed remote signer and a separate production abuse-control secret.
+The completed one-time Testnet smoke used an anonymous FD-only boundary after explicit operator
+authorization. Its direct sender and live-test entry points are now removed, and the retained command
+fails before wallet, signer, database, or RPC access. Read-only reconciliation imports no signer and
+accepts only pinned public evidence. A hosted relay must use a deployment secret manager, KMS, or
+reviewed remote signer and a separate production abuse-control secret.
 
 Never commit or log a private key, raw AES key, passphrase, authority secret, relayer/deployer
 wallet, `.env` file, real export, browser profile, database dump, or generated build artifact. The
@@ -83,6 +80,7 @@ Attempted and Site confirmed evidence remains Pending acceptance even when its l
 ciphertext are valid. A local signature authenticates an installation's event; it does not prove
 site honesty, authority acceptance, legal timeliness, identity, or an onchain record. Only a
 verified authoritative acknowledgment may support Accepted or Rejected. The current extension
-makes no relay, RPC, or Monad transaction. The server foundation and a separately funded low-value
-Testnet relayer exist, but the live smoke command remains disabled and has not been run. No Monad
-transaction was signed or sent during this safety checkpoint.
+makes no relay, RPC, or Monad transaction. The server foundation's separate low-value Testnet
+relayer completed one synthetic development-only Attempted smoke anchor. That anchor is not
+extension/verifier demo data, a production receipt, a real filing, or authority acceptance; the
+one-time sender is retired.

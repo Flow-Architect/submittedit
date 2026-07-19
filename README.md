@@ -37,8 +37,9 @@ A confirmation remains bound to the originating tab and Attempted event and rema
 acceptance**. The fictional authority can produce real receipt-bound P-256 signatures for matching
 terminal event cores. The server now has a PostgreSQL encrypted-blob and signed-event relay
 foundation with durable idempotency, fee/abuse controls, recovery, and real local-Anvil contract
-tests. It is not hosted, has no real relayer wallet, and has sent no application transaction to
-Monad Testnet. Extension upload/progress, authority polling, and public verification remain later
+tests. It is not hosted. A separate low-value relayer completed exactly one synthetic,
+development-only Monad Testnet smoke anchor; that evidence is not application seed/demo data or a
+real filing. Extension upload/progress, authority polling, and public verification remain later
 work.
 
 See [the extension guide](docs/EXTENSION.md), [privacy boundary](docs/PRIVACY.md),
@@ -64,6 +65,15 @@ See [the extension guide](docs/EXTENSION.md), [privacy boundary](docs/PRIVACY.md
 - Source verification: [MonadVision/Sourcify job](https://sourcify-api-monad.blockvision.org/v2/verify/e136f18f-a9ba-4dac-879c-be0193376ec6) reported overall `match` and runtime `match`; `creationMatch` was `null`, so separate creation-bytecode verification is not claimed.
 
 The public manifest is [`deployments/monad-testnet.json`](deployments/monad-testnet.json). One [development-only health-check transaction](https://testnet.monadvision.com/tx/0x389b2f951a84414e9824cd6d13f9d8dedb06c978c88e2865b875551f06fb04cb) proves that the live contract accepts a valid synthetic Attempted event. That receipt is not product data, user data, a real filing, proof of acceptance, or judge-demo data, and it is excluded from the normal contract-client API.
+
+The relay foundation also completed one [synthetic development-only smoke transaction](https://testnet.monadvision.com/tx/0x71315582a64d576454137732ec8aa139c9688d915f2fab44b97b977c10e38a16)
+from the separate public relayer `0x63314854E3e5366aF1155B72c1d730d9400397eF` in block
+`46136733`. It anchored receipt
+`0x466c721416db5ba7e9127f3b606a397c417f15d6018f23e65484610536556d5b` at Attempted stage with
+event hash `0x427113beeff23f825ecd342047e822a15265b1e9dcf8a5625f1feb4eecf801d0`.
+The one-time sender is retired; `pnpm reconcile:relay-monad-smoke` performs only public, read-only
+RPC checks. This record is not extension or verifier demo data, a production receipt, a real filing,
+or an authority acknowledgment.
 
 ## Workspace
 
@@ -141,7 +151,7 @@ entry-point checks, and Next route type generation. A real PostgreSQL database i
 both commands. Install the bundled Chromium once with
 `pnpm exec playwright install chromium`. See [the extension guide](docs/EXTENSION.md) and
 [the demo portal guide](docs/DEMO_PORTAL.md) for local setup and test details. Relay configuration,
-PostgreSQL entities, local testing, and the disabled Monad smoke harness are documented in
+PostgreSQL entities, local testing, and the completed Monad smoke evidence are documented in
 [the relay guide](docs/RELAY.md).
 Run `pnpm icons:generate` only after an intentional change to the canonical SVG mark. After a
 contract build, `pnpm contract:abi` regenerates the reviewed ABI and

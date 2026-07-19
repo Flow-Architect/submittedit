@@ -5,11 +5,11 @@
 The relay foundation is a server-side, PostgreSQL-backed checkpoint. It stores opaque Goal 10
 ciphertext and relays verified `ATTEMPTED` and `SITE_CONFIRMED` fingerprints through the real
 `SubmissionReceiptRegistry` on a local Anvil-compatible chain. It is not hosted and has not sent a
-Monad Testnet transaction. The extension does not call these APIs until Goal 12.
+production or user transaction. The extension does not call these APIs until Goal 12.
 
-The separately created low-value Monad Testnet account `submittedit-relayer` remains in its local
-encrypted Foundry keystore. This checkpoint hardens, but does not execute, the one-time live smoke
-path. The production relay remains disabled and unhosted.
+The separately created low-value Monad Testnet account `submittedit-relayer` completed exactly one
+synthetic development-only live smoke anchor. Its one-time sender is now permanently disabled. The
+production relay remains disabled and unhosted.
 
 No route decrypts a receipt, accepts a decryption key, creates an authority outcome, or changes the
 Goal 03 event/signature format. Attempted and Site confirmed remain Pending acceptance.
@@ -261,66 +261,51 @@ The migration test drops and recreates a dedicated database schema. Never point 
 statement at production. The [demo portal guide](DEMO_PORTAL.md#local-postgresql-and-development)
 contains the local PostgreSQL 17 container setup.
 
-## Disabled Monad Testnet smoke harness
+## Completed Monad Testnet relay smoke
 
-The reviewed operator entry point is `pnpm test:relay-monad-smoke:wallet`. It remains disabled by
-default and must not run until Bryan explicitly authorizes the one transaction. It is not an
-ordinary test and refuses CI, Mainnet, a different contract, a different account name, a missing
-expected address, an unsafe database, or an attempt cap other than one.
+The one-time sender is retired. `pnpm test:relay-monad-smoke:wallet` now fails immediately before
+wallet, database, signer, or RPC access, and the direct launcher and live Vitest entry point no
+longer exist. Do not recreate or rerun them.
 
-The transaction-free readiness check is:
+The completed smoke is synthetic development-only evidence:
+
+- relayer: `0x63314854E3e5366aF1155B72c1d730d9400397eF`;
+- transaction:
+  [`0x71315582a64d576454137732ec8aa139c9688d915f2fab44b97b977c10e38a16`](https://testnet.monadvision.com/tx/0x71315582a64d576454137732ec8aa139c9688d915f2fab44b97b977c10e38a16);
+- block: `46136733`;
+- receipt ID: `0x466c721416db5ba7e9127f3b606a397c417f15d6018f23e65484610536556d5b`;
+- event hash: `0x427113beeff23f825ecd342047e822a15265b1e9dcf8a5625f1feb4eecf801d0`;
+- extension-key hash:
+  `0x1c4167ff3c69b66279e58773bdc30d8343ba41ff6cbc32ee4c8485d9280dd636`;
+- state: `ATTEMPTED` / `1`, event count `1`, and `isAnchored = true`;
+- relayer nonce: `0` before and `1` after; and
+- post-transaction balance: `4.984017110000000000 MON`, above the
+  `4.950000000000000000 MON` protected minimum.
+
+The successful live Vitest scenario asserted its disposable PostgreSQL evidence before cleanup:
+exactly one operation for the generated event, `CONFIRMED`, `attempt_count = 1`, one daily-budget
+transaction, one populated/distinct transaction hash, and durable next nonce equal to live
+pre-nonce plus one. The subsequent wrapper failure was only post-processing: it invoked an
+undeclared host `rg`. The bounded Node postflight now requires exactly one four-field JSON result,
+rejects malformed/duplicate/missing results and bad hashes, and has a no-`rg` test. The temporary
+output and disposable database no longer exist; no database contents are reconstructed or
+published.
+
+Reconcile the public evidence without a signer, wallet, FD, secret, or database:
 
 ```bash
-SUBMITTEDIT_MONAD_SMOKE_CONFIRM=I_UNDERSTAND_THIS_SENDS_ONE_DEVELOPMENT_TRANSACTION \
-SUBMITTEDIT_RELAYER_EXPECTED_ADDRESS=0x63314854E3e5366aF1155B72c1d730d9400397eF \
-pnpm test:relay-monad-smoke:dry-run
+pnpm reconcile:relay-monad-smoke
 ```
 
-Dry-run checks the installed Foundry wallet help without selecting an account, validates the exact
-chain/runtime/protocol and public relayer EOA/balance/nonce through read-only RPC, validates the
-disposable database plan, and reports `walletAccessed: false` and `wouldSendTransaction: false`. It
-does not start Docker, open a keystore, prompt for a password, read FD 3, sign, or broadcast.
+This pins all public values in the command, then uses only read-only RPC methods. It verifies chain,
+runtime and protocol; transaction status/to/from/block; the exact `ReceiptEventAnchored` arguments;
+`getReceipt`; `isAnchored`; pending nonce `1`; and the finalized protected balance. It neither
+reconstructs private receipt contents nor creates a transaction.
 
-When separately authorized, Bryan will run the same two non-secret environment assignments with:
-
-```bash
-pnpm test:relay-monad-smoke:wallet
-```
-
-The runner uses only Foundry account name `submittedit-relayer`; `submittedit-deployer` is forbidden.
-Foundry prompts for the encrypted-keystore password through its normal TTY behavior. No password
-argument, password file, `.env`, or plaintext key file is accepted. Foundry's private-key stdout is
-connected directly to anonymous FD 3. The launcher forwards only FD 3 to the single-threaded
-explicit Vitest process, closes its own descriptor immediately, and the signer reads and closes the
-test descriptor exactly once. The key is never printed, logged, serialized, returned, copied to an
-environment variable, or persisted. Raw key bytes necessarily exist briefly in the pipe and signer
-memory; the input buffer and local string reference are cleared after account construction, but
-JavaScript cannot guarantee physical memory zeroization.
-
-The smoke process requires `SUBMITTEDIT_RELAYER_EXPECTED_ADDRESS`, derives the address from the
-supplied key, and aborts before database/nonce reservation, signing, or any RPC write on mismatch.
-It generates the abuse-control HMAC key from 32 random bytes inside that process; production still
-requires its real abuse secret through hosting configuration.
-
-The runner creates only `submittedit_goal11_smoke_test` at `127.0.0.1:55432` in a PostgreSQL 17
-tmpfs container. `DATABASE_URL` and `TEST_DATABASE_URL` must both exist and be byte-for-byte equal;
-the direct smoke launcher rechecks the exact protocol, host, port, and test-only database name
-before Vitest can migrate, truncate, or connect. Cleanup traps are installed before Docker starts.
-They close FD 3, wait for the Foundry producer, remove the tmpfs container and public result file,
-unset smoke variables, and run repository/residue checks.
-
-Each run creates a random receipt, extension identity, event, ciphertext key/IV, blob, and
-idempotency key. Before relay it proves the receipt is empty and event unanchored. The relay method
-is invoked exactly once with `SUBMITTEDIT_RELAY_MAX_ATTEMPTS_PER_EVENT=1`; a transport ambiguity may
-only perform a read lookup for the already-derived hash. Post-run checks require one operation, one
-attempt, one budget transaction, one transaction hash, successful receipt, the exact decoded
-registry event, Attempted state/hash/key/count, global anchoring, durable and live nonce increments
-of exactly one, and the protected final balance. Any mismatch fails closed; no second transaction
-is created.
-
-This anonymous-pipe design is a narrowly reviewed Testnet smoke compromise, not the long-term
-production signer architecture. Hosting must use a secret manager, KMS, hardware/remote signer, or
-equivalent reviewed boundary. Never reuse `submittedit-deployer`.
+This anchor must never be used as application seed data, extension or verifier demo data, a
+production receipt, a real filing, proof of acceptance, or an authority acknowledgment. Hosting
+still requires a secret manager, KMS, hardware/remote signer, or equivalent reviewed boundary.
+Never reuse `submittedit-deployer`.
 
 ## Stable failures
 

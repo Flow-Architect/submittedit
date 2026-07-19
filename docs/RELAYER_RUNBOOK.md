@@ -3,10 +3,10 @@
 ## Current status
 
 The local relay foundation and a separately managed low-value Monad Testnet relayer now exist. The
-public relayer address is `0x63314854E3e5366aF1155B72c1d730d9400397eF`; its independently
-reported finalized balance at this safety checkpoint is `5 MON`, with nonce zero. Its encrypted
-Foundry account remains local and was not opened by this correction. There is no hosted deployment
-or SubmittedIt application transaction on Monad Testnet. The opt-in smoke harness remains disabled.
+public relayer address is `0x63314854E3e5366aF1155B72c1d730d9400397eF`. It completed exactly one
+synthetic development-only smoke anchor; the reconciled post-transaction balance is
+`4.984017110000000000 MON` and its pending nonce is `1`. There is no hosted deployment or user
+transaction. The one-time sender is permanently disabled.
 
 ## Identity separation
 
@@ -33,64 +33,58 @@ Production startup fails closed unless relay enablement, chain/address, RPC, sig
 daily budget, reserve/low-balance thresholds, and confirmation policy are valid. The verified
 Monad Testnet address and chain ID are additionally hard-checked in production.
 
-The one-time local smoke is a separate boundary. It rejects the production raw-key environment
-variable and accepts only `SUBMITTEDIT_RELAYER_PRIVATE_KEY_FD=3` in the explicit non-CI smoke
-process. It also requires a separately supplied expected public address and generates its HMAC key
-inside that process. Production refuses FD input and still requires its real hosting secrets.
+The completed one-time local smoke used a separate FD-only boundary. Its direct launcher and live
+test entry point have been removed; the retained command is an immediate refusal. Production
+continues to refuse descriptor input and requires its real hosting secrets.
 
 ## Funding and balance policy
 
-The relayer has already been funded manually. Do not fund it again during this safety checkpoint.
+The relayer has already been funded manually. Do not fund it again.
 Monad uses a three-block delayed state view and low-balance EOAs can send only about once per three
-blocks. The smoke therefore reads finalized funding state, requires three receipt confirmations,
-and permits exactly one transaction. Health reports only `EMPTY`, `LOW`, or `HEALTHY`, never an
-exact balance.
+blocks. The completed smoke required three receipt confirmations and exactly one transaction.
+Health reports only `EMPTY`, `LOW`, or `HEALTHY`, never an exact balance.
 
 Never request funds for, export, unlock, inspect, or reuse `submittedit-deployer`. Never paste a
 keystore password, private key, or mnemonic into a faucet, explorer, issue, or log.
 
-## One-time Testnet smoke
+## Completed one-time Testnet smoke
 
-The reviewed readiness command is transaction-free:
+Do not run another smoke transaction. The retained `pnpm test:relay-monad-smoke:wallet` command
+fails immediately, and the old direct sender entry points no longer exist.
+
+Public development-only evidence:
+
+- transaction:
+  [`0x71315582a64d576454137732ec8aa139c9688d915f2fab44b97b977c10e38a16`](https://testnet.monadvision.com/tx/0x71315582a64d576454137732ec8aa139c9688d915f2fab44b97b977c10e38a16),
+  block `46136733`, status success;
+- receipt `0x466c721416db5ba7e9127f3b606a397c417f15d6018f23e65484610536556d5b`;
+- event `0x427113beeff23f825ecd342047e822a15265b1e9dcf8a5625f1feb4eecf801d0`;
+- extension-key hash
+  `0x1c4167ff3c69b66279e58773bdc30d8343ba41ff6cbc32ee4c8485d9280dd636`;
+- Attempted / `1`, event count `1`, `isAnchored = true`;
+- relayer nonce `0` to `1`; and
+- remaining balance `4.984017110000000000 MON`.
+
+The passing smoke test queried the disposable PostgreSQL database before cleanup and required one
+confirmed operation, one attempt, one budget transaction, one distinct persisted transaction hash,
+and one durable nonce advance. The database was then removed as designed. Its rows are not public
+evidence and must not be reconstructed.
+
+Run only the public read-only reconciliation:
 
 ```bash
-SUBMITTEDIT_MONAD_SMOKE_CONFIRM=I_UNDERSTAND_THIS_SENDS_ONE_DEVELOPMENT_TRANSACTION \
-SUBMITTEDIT_RELAYER_EXPECTED_ADDRESS=0x63314854E3e5366aF1155B72c1d730d9400397eF \
-pnpm test:relay-monad-smoke:dry-run
+pnpm reconcile:relay-monad-smoke
 ```
 
-It reads Foundry help and public chain/runtime/protocol/EOA/balance/nonce state only. It does not
-select an account, open a keystore, start PostgreSQL, prompt, sign, or broadcast. A passing dry-run
-is readiness evidence, not authorization to spend.
+It requires explicit pinned public values and checks the reviewed finalized runtime/protocol,
+transaction and event, contract state, pending nonce, and protected finalized balance. It imports no
+signer or database, opens no wallet or FD, and cannot sign or broadcast. The original wrapper's
+undeclared `rg` postflight dependency was replaced by a bounded Node JSON parser with fail-closed
+tests.
 
-Only after Bryan separately authorizes the transaction, use the same two non-secret assignments
-with:
-
-```bash
-pnpm test:relay-monad-smoke:wallet
-```
-
-The runner fixes the account name to `submittedit-relayer`. Foundry obtains the password through
-its normal TTY prompt and writes the decrypted key directly into an anonymous pipe. No password or
-key enters an argument, password file, `.env`, shell history, log, result file, or environment
-variable. The smoke signer reads FD 3 exactly once, closes it, verifies that the derived checksum
-address equals the expected address, builds the Viem account, and clears its local input buffer and
-string reference. The raw key still exists briefly in process memory; JavaScript cannot guarantee
-physical zeroization. This is a Testnet-only compromise. Hosted operation must use a secret manager,
-KMS, or reviewed remote signer.
-
-Before any migration or test setup, both database variables must be present, byte-identical, and
-equal to the reviewed local tmpfs database at
-`127.0.0.1:55432/submittedit_goal11_smoke_test`. The runner installs cleanup traps before Docker,
-applies the reviewed migrations, sets the attempt cap to one, and invokes the relay method once.
-Transport ambiguity permits only read-only lookup of the already-derived transaction hash.
-
-The test first requires a random receipt to be empty and its random event unanchored. Afterward it
-requires one operation, one attempt, one budget transaction, one distinct transaction hash, a
-successful exact-contract event, Attempted stage/hash/key/count, `isAnchored`, durable/live nonce
-increments of one, and the protected final balance. Cleanup closes FD 3, waits for the Foundry
-producer, removes the tmpfs database and temporary public result, unsets smoke variables, checks for
-child processes, and reruns repository secret/ignore/clean-tree checks. Any mismatch fails closed.
+This record is synthetic development-only contract/relay evidence. It is not application seed data,
+extension or verifier demo data, a production receipt, a real filing, or an authority
+acknowledgment. A hosted signer must use a secret manager, KMS, or reviewed remote signer.
 
 ## Budget and emergency disable
 

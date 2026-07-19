@@ -1322,6 +1322,7 @@ test("site confirmation navigation binding handles SPA, history, tabs, stale rec
 
   const crossPage = await context.newPage();
   await crossPage.goto(`${fixtureOrigin}/same-page-form`);
+  await crossPage.bringToFront();
   await crossPage.evaluate(() => {
     document.querySelector<HTMLFormElement>("#same-page-form")?.requestSubmit();
   });

@@ -25,9 +25,9 @@
     "test:browser-parity": "pnpm --filter @submittedit/receipt-core build && pnpm --filter @submittedit/receipt-core test:exports && playwright test --config playwright.receipt-core.config.ts",
     "test:e2e": "node scripts/run-e2e.mjs",
     "test:relay-local-chain": "pnpm --filter @submittedit/web test:relay-local-chain",
-    "test:relay-monad-smoke": "pnpm --filter @submittedit/web test:relay-monad-smoke",
-    "test:relay-monad-smoke:dry-run": "pnpm --filter @submittedit/web test:relay-monad-smoke:dry-run",
     "test:relay-monad-smoke:wallet": "pnpm --filter @submittedit/web test:relay-monad-smoke:wallet",
+    "postflight:relay-monad-smoke": "pnpm --filter @submittedit/web postflight:relay-monad-smoke",
+    "reconcile:relay-monad-smoke": "pnpm --filter @submittedit/web reconcile:relay-monad-smoke",
     "secrets:check": "node scripts/check-secrets.mjs",
     "check": "pnpm contract:deployment:check && pnpm format:check && pnpm icons:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm --filter @submittedit/web audit:relay-client && pnpm --filter @submittedit/extension audit:build && pnpm --filter @submittedit/contract-client test:exports && pnpm test:browser-parity && pnpm secrets:check"
   },

@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -144,15 +143,46 @@ test("dry-run uses only help, tool-version, and read-only RPC commands", () => {
   );
 });
 
-test("reviewed wallet runner has valid Bash and no password or raw-key argument", async () => {
-  const runnerUrl = new URL("./test-relay-monad-smoke-wallet.sh", import.meta.url);
-  const source = await readFile(runnerUrl, "utf8");
-  assert.equal(source.includes("submittedit-deployer"), false);
-  assert.equal(source.includes("--password"), false);
-  assert.equal(source.includes("--password-file"), false);
-  assert.equal(source.includes("--private-key"), false);
-  assert.match(source, /wallet private-key --account "\$ACCOUNT_NAME"/u);
-  assert.match(source, /unset RUN_MONAD_RELAY_SMOKE SUBMITTEDIT_MONAD_SMOKE_CONFIRM/u);
-  const syntax = spawnSync("bash", ["-n", runnerUrl.pathname]);
-  assert.equal(syntax.status, 0);
+test("the completed smoke command refuses before any wallet, database, or transaction path", async () => {
+  const refusalUrl = new URL("./refuse-relay-monad-smoke-rerun.mjs", import.meta.url);
+  const source = await readFile(refusalUrl, "utf8");
+  for (const forbidden of [
+    "private-key",
+    "submittedit-deployer",
+    "docker",
+    "DATABASE_URL",
+    "sendRawTransaction",
+    "test-relay-monad-smoke.mjs",
+  ]) {
+    assert.equal(source.includes(forbidden), false, `forbidden repeat-send marker: ${forbidden}`);
+  }
+  assert.match(source, /permanently disabled/u);
+  assert.match(source, /process\.exitCode = 1/u);
+
+  const webPackage = JSON.parse(
+    await readFile(new URL("../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal("test:relay-monad-smoke" in webPackage.scripts, false);
+  assert.equal("test:relay-monad-smoke:dry-run" in webPackage.scripts, false);
+  assert.equal(
+    webPackage.scripts["test:relay-monad-smoke:wallet"],
+    "node scripts/refuse-relay-monad-smoke-rerun.mjs",
+  );
+  for (const retiredPath of [
+    "./test-relay-monad-smoke-wallet.sh",
+    "./test-relay-monad-smoke.mjs",
+    "../test/relay-monad-smoke.test.ts",
+  ]) {
+    await assert.rejects(readFile(new URL(retiredPath, import.meta.url), "utf8"), /ENOENT/u);
+  }
+
+  const rootPackage = JSON.parse(
+    await readFile(new URL("../../../package.json", import.meta.url), "utf8"),
+  );
+  assert.equal("test:relay-monad-smoke" in rootPackage.scripts, false);
+  assert.equal("test:relay-monad-smoke:dry-run" in rootPackage.scripts, false);
+  assert.equal(
+    rootPackage.scripts["test:relay-monad-smoke:wallet"],
+    "pnpm --filter @submittedit/web test:relay-monad-smoke:wallet",
+  );
 });
