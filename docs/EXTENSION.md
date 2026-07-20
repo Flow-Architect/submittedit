@@ -23,6 +23,13 @@ browser-observed evidence for explicitly enabled standard HTML form submissions.
 - create one persistent installation P-256 identity whose private key is non-extractable;
 - sign and verify every locally retained Attempted and Site confirmed event;
 - encrypt every complete private receipt bundle with a distinct local AES-256-GCM key;
+- when explicitly built with reviewed endpoints, upload that authenticated ciphertext envelope and
+  send the matching bounded signed protocol event to the relay;
+- persist a resumable, idempotent anchor operation for each Attempted or Site confirmed event;
+- poll the relay's public operation record without resubmitting a second transaction;
+- independently verify chain ID, registry runtime/protocol, transaction destination and success,
+  the exact decoded anchor log, and resulting registry state through a separate public RPC;
+- display truthful relay, RPC, network, contract, reconciliation, and confirmed-chain states;
 - export one receipt as a passphrase-encrypted `.submittedit` package and import it into a clean
   profile without importing the original private signing key;
 - delete one receipt together with its ciphertext and key, or irreversibly delete all SubmittedIt
@@ -35,9 +42,14 @@ browser-observed evidence for explicitly enabled standard HTML form submissions.
 that the user reviewed evidence the website displayed. Neither means authority acceptance.**
 Signing proves that the same local installation signed the stored event; encryption protects the
 private bundle at rest from casual plaintext inspection. Neither proves site honesty, authority
-acceptance, legal timeliness, or an onchain record. The extension does not upload a blob, call the
-separate server relay foundation, poll an authority, write to Monad, or expose the final public
-verifier in this milestone.
+acceptance, legal timeliness, or an onchain record. An unconfigured extension does not upload a
+blob, call the separate server relay foundation, or contact an RPC. Those capabilities are enabled
+only when the public endpoints are supplied at
+build time. In a configured build, it sends no private key or decryption key, performs no wallet
+signing, and treats a relay response as provisional until independent chain verification succeeds.
+The local integration profile uses only PostgreSQL, a local relay, an ephemeral local Anvil signer, and
+real Chromium. No extension-originated Monad transaction, authority polling/attachment, or final
+public verifier is claimed.
 
 ## Build and install unpacked
 
@@ -49,6 +61,14 @@ pnpm install --frozen-lockfile
 pnpm --filter @submittedit/extension build
 pnpm --filter @submittedit/extension audit:build
 ```
+
+An unconfigured build keeps relay/RPC URLs blank and performs local capture/storage only. To build a
+reviewed relay-enabled artifact, copy the non-secret names from `apps/extension/.env.example` into
+an ignored environment file or export them in the shell. `WXT_SUBMITTEDIT_RELAY_URL` and
+`WXT_SUBMITTEDIT_RPC_URL` must be credential-free HTTPS origins (loopback HTTP is accepted only for
+development). Chain ID, checksum registry address, runtime bytecode hash, deployment block, and
+explorer templates are public pinned values. WXT bundles these public values, so never place an RPC
+credential, relay token, signer key, wallet secret, or database URL in a `WXT_` variable.
 
 Then:
 
@@ -71,7 +91,9 @@ Store listing in this milestone.
 4. Denial leaves the page untouched and records no receipt.
 5. After a grant, the service worker rechecks the active tab, origin, and live Chrome permission.
 6. A runtime-only content script is registered for the enabled exact-origin match. The production
-   manifest still has no install-time host permission and no manifest-registered capture script.
+   manifest has no manifest-registered capture script. Portal access remains an optional
+   user-granted origin; any build-time relay/RPC host permissions are separate exact service
+   origins and do not grant capture access to arbitrary sites.
 7. The already-open page receives the same reviewed script immediately; future same-origin
    navigations receive it at `document_start`.
 8. The script reports only structural readiness until a real submit event occurs.
@@ -95,7 +117,9 @@ Store listing in this milestone.
 16. Revocation removes the runtime registration, asks installed page listeners to dispose, removes
     enabled metadata, and makes the worker reject any stale message.
 
-The extension performs no background polling.
+An unconfigured build performs no relay polling. A configured build runs only bounded polling for
+an already-created operation and uses a once-per-minute alarm to resume incomplete durable
+operations after worker suspension or browser restart. It does not poll the fictional authority.
 
 ## Prepared, Attempted, and Site confirmed
 
@@ -121,6 +145,40 @@ and, with equal prominence:
 
 The event remains `PENDING_ACCEPTANCE`; no Accepted or Rejected label appears without a later
 verified authority acknowledgment.
+
+## Encrypted relay and chain-evidence lifecycle
+
+Relay integration begins only after the canonical event is signed, verified, encrypted, and
+durably saved. The extension derives a stable idempotency key from the event hash and records an
+`anchorOperations` entry in schema 5 before making a network request. Each operation is bound to
+one receipt ID, event hash, stage, ciphertext blob locator, pinned chain ID, checksum contract,
+relay origin, and deterministic idempotency key. A second event for the same receipt gets its own
+operation; repeated workflow wakeups reuse the existing one.
+
+The state machine is intentionally more precise than “pending” or “done”:
+
+1. `SAVED_LOCALLY`, `UPLOADING_ENCRYPTED_PROOF`, and `ENCRYPTED_PROOF_UPLOADED` cover the exact
+   ciphertext handoff. Exact retries return the same blob ID; the same idempotency key with changed
+   bytes is a conflict.
+2. `REQUESTING_MONAD_ANCHOR`, `SUBMITTED_TO_RELAY`, `WAITING_FOR_TRANSACTION`, and
+   `WAITING_FOR_CONFIRMATIONS` describe relay progress. The extension never signs or sends the
+   chain transaction itself.
+3. `VERIFYING_CONTRACT_STATE` means the extension is reading through its configured RPC rather
+   than trusting the relay's `CONFIRMED` label.
+4. `CHAIN_EVIDENCE_CONFIRMED` is terminal only after signer-free verification of the configured
+   chain, runtime fingerprint and protocol, successful transaction destination, exact decoded
+   `ReceiptEventAnchored` fields, event linkage/key fingerprints, and compatible stored registry
+   state. The verified transaction hash, block, sender, and timestamp are then written into the
+   encrypted receipt bundle.
+5. `RELAY_UNAVAILABLE`, `RPC_UNAVAILABLE`, `WRONG_NETWORK`, `CONTRACT_MISMATCH`,
+   `RECONCILIATION_REQUIRED`, `RETRYABLE_FAILURE`, and `FINAL_FAILURE` remain visibly distinct.
+   Retry/recheck resumes the same event and relay identifiers; it does not manufacture a new
+   success state.
+
+An anchored Attempted or Site confirmed event remains **Pending acceptance**. The transaction
+sender is only `anchoredBy`; it is not the filer, website, extension identity, or authority. A
+chain anchor proves that the specific event fingerprint reached the reviewed registry, not that
+the filing was accepted or timely.
 
 ## Successful-control serialization
 
@@ -232,8 +290,9 @@ cryptography creates a different identity.
 
 Persistent local state is split deliberately:
 
-- Chrome `storage.local` keeps the `submittedit.localState` schema-4 settings record, public
-  identity metadata, exact-origin metadata, and a minimal receipt index.
+- Chrome `storage.local` keeps the `submittedit.localState` schema-5 settings record, public
+  identity metadata, exact-origin metadata, a minimal receipt index, and public resumable anchor
+  operation metadata.
 - IndexedDB keeps the non-extractable installation signing key, one non-extractable random 256-bit
   AES-GCM key per receipt, and one versioned ciphertext envelope per receipt.
 - The validated schema-3 operational receipt shape is reconstructed only in service-worker memory
@@ -242,31 +301,38 @@ Persistent local state is split deliberately:
 Each local encryption uses Web Crypto AES-GCM with a fresh random 96-bit IV. Canonical authenticated
 additional data binds the envelope format/version, algorithm, blob ID, receipt ID, receipt schema
 version, extension key ID, and encryption-key version. A random key ID in the index is only an
-IndexedDB locator, never AES key material. Complete form evidence, confirmation text/snippets,
-event envelopes, and local operational context remain inside ciphertext.
+IndexedDB locator, never AES key material. At rest, complete form evidence, confirmation
+text/snippets, event envelopes, and local operational context remain inside ciphertext. A
+configured relay handoff separately sends the bounded signed event described above.
 
-The plaintext schema-4 index contains at most 50 entries and only:
+The plaintext schema-5 record contains at most 50 receipt entries and 100 anchor operations. It
+keeps only:
 
-| Index data                                         | Purpose                                                 |
-| -------------------------------------------------- | ------------------------------------------------------- |
-| receipt/blob/key locators and envelope version     | Find the correct ciphertext and local key               |
-| receipt ID and extension public-key ID             | Bind the encrypted artifact to public identity metadata |
-| origin, capture/site-confirmation times, and stage | Render truthful minimal receipt navigation              |
-| `PENDING_ACCEPTANCE` and `LOCAL`/`IMPORTED`        | Prevent optimistic state and identify read-only imports |
+| Index data                                                                                    | Purpose                                                                |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| receipt/blob/key locators and envelope version                                                | Find the correct ciphertext and local key                              |
+| receipt ID and extension public-key ID                                                        | Bind the encrypted artifact to public identity metadata                |
+| origin, capture/site-confirmation times, and stage                                            | Render truthful minimal receipt navigation                             |
+| `PENDING_ACCEPTANCE` and `LOCAL`/`IMPORTED`                                                   | Prevent optimistic state and identify read-only imports                |
+| event/receipt hashes, relay/blob/status locators, state/counters, public transaction evidence | Resume and independently verify an anchor without decrypting form data |
 
 It contains no captured values, full form descriptor, confirmation message or snippet, private
-key, AES key, signature bytes, authority result, transaction hash, or block number. Chromium
-storage access is restricted to trusted extension contexts where supported before state is read or
-migrated. The side panel asks the worker for a snapshot; the worker authenticates, decrypts,
-strictly validates, and then discards its temporary bundle map after the request completes. Neither
-decrypted values nor passphrases are logged, placed in URLs, or cached back into local storage.
+key, AES key, signature bytes, authority result, or decryption secret. Confirmed operations do keep
+public transaction hash, block, sender, chain, and contract evidence because those values are
+required to recover and re-verify the anchor. Chromium storage access is restricted to trusted
+extension contexts where supported before state is read or migrated. The side panel asks the
+worker for a snapshot; the worker authenticates, decrypts, strictly validates, and then discards its
+temporary bundle map after the request completes. Neither decrypted values nor passphrases are
+logged, placed in URLs, or cached back into local storage.
 
 Valid legacy schema-0/1/2 state first resolves through the reviewed schema-3 parser. The schema-3
 to schema-4 migration then validates every receipt and linked event, preserves all IDs, cores,
 hashes, and timestamps, signs compatible events, and stages encrypted artifacts in IndexedDB under
 a versioned migration journal. The old plaintext Chrome record is replaced only after every
 ciphertext and key is durable. An interrupted write leaves the old record and journal recoverable;
-retry resumes deterministically. A malformed schema-4 record, missing key/blob, failed signature,
+retry resumes deterministically. Schema 5 adds an initially empty, strictly parsed
+`anchorOperations` collection without changing receipt ciphertext or keys. A malformed schema-5
+record, missing key/blob, failed signature,
 or failed AES authentication fails closed without silently rotating identity or displaying a false
 receipt.
 
@@ -291,14 +357,17 @@ malformed receipts fail before persistence. A duplicate requires explicit replac
 import receives a new local per-receipt AES key and ciphertext; it never imports the original
 private signing key. When its public identity differs from the current installation, the panel
 labels it imported/read-only, deactivates any old tab binding, and will not pretend to append events
-as the original signer.
+as the original signer. The current import rejects a package that carries chain-anchor metadata
+because imported chain claims cannot be marked verified until the future public verifier
+independently rechecks them; local export still preserves that metadata.
 
 The code also defines a tested utility that can place a future sharing secret only after `#` in a
 URL. It rejects bases that already contain a query or fragment and verifies the secret cannot
-escape into the path or query. There is no share-link UI, extension upload, server request, or live
-sharing claim yet. The separate Goal 11 server endpoint accepts only an already encrypted envelope
-and rejects query-held keys; later extension integration must keep the fragment out of every HTTP
-request, and the eventual verifier must decrypt in the browser.
+escape into the path or query. There is no share-link UI or live sharing claim yet. A configured
+extension uploads its existing authenticated ciphertext envelope to the relay without any
+decryption key; that operational upload is not a share URL. The relay rejects query-held keys, and
+the eventual verifier must keep a future fragment secret out of every HTTP request and decrypt in
+the browser.
 
 ## Deletion
 
@@ -318,13 +387,16 @@ ciphertext is recreated. There is no secure-erasure claim for browser/OS backups
 | `sidePanel`                                   | Hosts the SubmittedIt interface and lets the toolbar action open it.                                                                                           |
 | `activeTab`                                   | Exposes only the selected tab information needed to display/request its exact origin.                                                                          |
 | `scripting`                                   | Registers and injects the reviewed capture bundle only for origins with live optional permission.                                                              |
-| `alarms`                                      | Reserved for later reminders; the current extension schedules none.                                                                                            |
+| `alarms`                                      | Resumes incomplete configured relay operations after service-worker or browser restart; no authority polling.                                                  |
 | `notifications`                               | Reserved for later reminders; the current extension sends none.                                                                                                |
 | Optional `http://*/*`, `https://*/*` capacity | Allows a user-triggered request for one runtime origin; grants no site access at install time.                                                                 |
+| Exact configured relay/RPC host origins       | Added only when public build variables are present; permits ciphertext relay calls and independent read-only RPC verification.                                 |
 
-The production manifest has no mandatory `host_permissions`, `<all_urls>`, `tabs`, cookies,
-history, web request, downloads, clipboard, identity, native messaging, or externally connectable
-surface.
+An unconfigured production manifest has no mandatory `host_permissions`. A configured build has
+exactly the normalized relay and RPC origins—never `<all_urls>` or `*://*/*`. No build requests
+`tabs`, cookies, history, web request, downloads, clipboard, identity, native messaging, or an
+externally connectable surface. The build audit compares the generated manifest against the exact
+configuration and rejects expanded permissions.
 
 ## Test and review commands
 
@@ -336,14 +408,16 @@ pnpm --filter @submittedit/extension build
 pnpm --filter @submittedit/extension audit:build
 pnpm exec playwright install chromium
 pnpm --filter @submittedit/extension test:browser
+ANVIL_BIN="$HOME/.foundry/bin/anvil" FORGE_BIN="$HOME/.foundry/bin/forge" pnpm test:extension-relay-local-chain
 ```
 
-The 110-test unit suite covers strict messages, native-successful-control serialization,
+The 128-test unit suite covers strict messages, native-successful-control serialization,
 protected-value exclusion, canonical event hashing, legacy and interrupted secure-storage
 migration, persistence, retry dedupe, permission decisions, panel states, confirmation linkage,
 non-extractable P-256/AES key generation, P1363 signing and tamper checks, AES-GCM authentication,
 PBKDF2 export/import, wrong-passphrase and unsupported-version failures, duplicate replacement,
-fragment isolation, and receipt/delete-all key cleanup.
+fragment isolation, receipt/delete-all key cleanup, relay configuration, request boundaries,
+durable anchor-state parsing, recovery classification, and workflow idempotency.
 
 The four-scenario Playwright suite uses production unpacked files in real persistent Chromium
 contexts. An ignored temporary copy establishes only synthetic fixture permissions, then restores
@@ -353,6 +427,18 @@ verification, CryptoKey persistence/non-extractability, actual IndexedDB ciphert
 plaintext index inspection, `.submittedit` download, wrong-passphrase failure, clean-profile import,
 original-identity verification/read-only labeling, explicit duplicate replacement, one-receipt and
 delete-all cleanup, and zero non-fixture HTTP(S) requests.
+
+The separate local full-stack Playwright suite builds a configured unpacked extension, starts
+real PostgreSQL and the real Next relay, deploys the reviewed registry to a clean Anvil chain with
+runtime-only ephemeral accounts, and runs real Chromium against the fictional portal. It asserts
+four independent ciphertext uploads, relay operations, transaction hashes, and contract anchors;
+Attempted and Site confirmed linkage; one web restart plus full browser/profile restart; RPC outage
+recovery; exact concurrent retry without a new nonce; wrong-network and runtime-mismatch failures;
+event-log/stored-state verification; non-extractable extension identity; and absence of synthetic
+private values or local signer material from server logs, ciphertext-upload bodies, Chrome
+plaintext state, and ciphertext envelope metadata. The separate signed-event request contains the
+bounded privacy-filtered event core required for server hash/signature validation; synthetic data
+is mandatory. It does not contact Monad Testnet.
 
 ## Manual signed/encrypted receipt review
 
@@ -381,8 +467,14 @@ Use only the fictional SubmittedIt Civic Filing Lab and synthetic values:
 10. Delete the imported receipt and confirm its index entry, ciphertext, and local key are gone.
 11. Run delete-all in the source profile and confirm permissions, receipts, AES keys, signing
     identity, and public identity metadata are removed while unrelated browser data remains.
-12. Confirm no encrypted upload, fake share URL, authority result, transaction hash, relay request,
-    RPC request, or Monad transaction occurs.
+12. For an unconfigured build, confirm no upload, fake share URL, authority result, transaction
+    hash, relay request, RPC request, or Monad transaction occurs.
+13. Separately run `pnpm test:extension-relay-local-chain` with the documented Anvil/Forge paths.
+    Confirm the configured test build shows relay/RPC progress and only claims chain evidence after
+    the independent local-registry checks pass.
+14. Confirm outage, restart, wrong-network, and contract-mismatch states remain truthful and that
+    retry reuses the same event and public relay operation. Do not substitute a wallet or Monad
+    endpoint for this local integration.
 
 ## Known limitations
 
@@ -403,5 +495,7 @@ Use only the fictional SubmittedIt Civic Filing Lab and synthetic values:
 - Website confirmation supports selected visible text for confirmation-page, inline-message, and
   redirect evidence. It does not capture screenshots, DOM snapshots, downloads, arbitrary page
   content, or cross-origin frames.
-- Automatic retention, reminders, encrypted upload/relay integration, production Monad anchoring,
-  extension-side authority attachment, public verification, and live sharing remain later work.
+- Automatic retention, reminders, production relay deployment/configuration, live extension-driven
+  Monad anchoring, extension-side authority attachment, public verification, and live sharing
+  remain later work. The relay lifecycle is exercised by a real local full-stack test, not a
+  hosted or live-network claim.

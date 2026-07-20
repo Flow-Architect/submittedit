@@ -56,7 +56,7 @@ const relayBody = (
 const context = { correlationId: "synthetic-correlation", networkScope: "192.0.2.10" };
 
 describe("encrypted blob service", () => {
-  it("stores opaque Goal 10 envelopes under independent random IDs and returns ciphertext unchanged", async () => {
+  it("replays an exact authenticated envelope idempotently and rejects changed bytes", async () => {
     const { blobs } = createHarness();
     const identity = createExtensionIdentity();
     const event = createSignedAttemptedEvent(identity);
@@ -66,9 +66,27 @@ describe("encrypted blob service", () => {
     const second = await blobs.store(envelope, bytes);
 
     expect(first.blobId).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-    expect(second.blobId).not.toBe(first.blobId);
+    expect(second.blobId).toBe(first.blobId);
     expect(first.blobId).not.toBe(envelope.authenticatedMetadata.blobId);
     expect((await blobs.get(first.blobId))?.envelope).toEqual(envelope);
+
+    const concurrentIdentity = createExtensionIdentity();
+    const concurrentEvent = createSignedAttemptedEvent(concurrentIdentity);
+    const concurrentEnvelope = createEncryptedEnvelope(
+      concurrentEvent.core.receiptId,
+      concurrentIdentity.publicKey.keyId,
+    );
+    const concurrentBytes = Buffer.byteLength(JSON.stringify(concurrentEnvelope));
+    const [concurrentFirst, concurrentSecond] = await Promise.all([
+      blobs.store(concurrentEnvelope, concurrentBytes),
+      blobs.store(concurrentEnvelope, concurrentBytes),
+    ]);
+    expect(concurrentSecond.blobId).toBe(concurrentFirst.blobId);
+
+    const changed = { ...envelope, ciphertext: `${envelope.ciphertext}A` };
+    await expect(
+      blobs.store(changed, Buffer.byteLength(JSON.stringify(changed))),
+    ).rejects.toMatchObject({ code: "ENCRYPTED_BLOB_CONFLICT", status: 409 });
 
     const rows = await testDatabase<{ readonly body: string }[]>`
       SELECT encrypted_envelope::text AS body FROM relay_encrypted_blobs WHERE public_id = ${first.blobId}

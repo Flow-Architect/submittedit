@@ -24,6 +24,7 @@ import {
   type RetentionPreference,
 } from "./storage-schema";
 import type { PublicKeyDescriptor, ReceiptId } from "@submittedit/receipt-core";
+import { ANCHOR_OPERATION_STATES, type AnchorOperationState } from "./anchor-state";
 
 export const MAX_RUNTIME_MESSAGE_BYTES = 8 * 1024;
 export const MAX_PORTABLE_RECEIPT_BYTES = 1024 * 1024;
@@ -96,7 +97,21 @@ export interface ReceiptSecuritySummary {
 }
 
 export interface PanelReceiptSummary extends LocalReceiptSummary {
+  readonly anchor: PanelAnchorSummary;
   readonly security: ReceiptSecuritySummary;
+}
+
+export interface PanelAnchorSummary {
+  readonly anchoredAt: string | null;
+  readonly anchoredBy: `0x${string}` | null;
+  readonly blockNumber: string | null;
+  readonly chainId: number | null;
+  readonly configuration: "CONFIGURED" | "DISABLED" | "INVALID";
+  readonly contractAddress: `0x${string}` | null;
+  readonly error: { readonly code: string; readonly message: string } | null;
+  readonly explorerUrl: string | null;
+  readonly state: AnchorOperationState | null;
+  readonly transactionHash: `0x${string}` | null;
 }
 
 export interface ConfirmationOpportunity {
@@ -131,6 +146,7 @@ export const EXTENSION_ERROR_CODES = [
   "EXPORT_FAILED",
   "IMPORT_DUPLICATE",
   "IMPORT_FAILED",
+  "ANCHOR_RECHECK_FAILED",
   "PASSPHRASE_MISMATCH",
   "INTERNAL_ERROR",
   "MESSAGE_TIMEOUT",
@@ -205,6 +221,7 @@ export type RuntimeRequest =
   | { type: "CLEAR_REVOKED_SITES" }
   | { type: "DELETE_LOCAL_DATA" }
   | { type: "DELETE_RECEIPT"; receiptId: ReceiptId }
+  | { type: "RECHECK_CHAIN"; receiptId: ReceiptId }
   | {
       type: "EXPORT_RECEIPT";
       receiptId: ReceiptId;
@@ -337,8 +354,9 @@ export function parseRuntimeRequest(value: unknown): RuntimeRequest | null {
     case "DELETE_LOCAL_DATA":
       return hasOnlyKeys(value, ["type"]) ? { type: value.type } : null;
     case "DELETE_RECEIPT":
+    case "RECHECK_CHAIN":
       return hasOnlyKeys(value, ["type", "receiptId"]) && isHash(value.receiptId)
-        ? { type: "DELETE_RECEIPT", receiptId: value.receiptId }
+        ? { type: value.type, receiptId: value.receiptId }
         : null;
     case "EXPORT_RECEIPT":
       return hasOnlyKeys(value, ["type", "receiptId", "passphrase", "passphraseConfirmation"]) &&
@@ -466,6 +484,7 @@ export function parseLocalReceiptSummary(value: unknown): PanelReceiptSummary | 
       "siteConfirmedAt",
       "siteConfirmationSnippet",
       "siteConfirmationOrigin",
+      "anchor",
       "security",
     ]) ||
     !isHash(value.receiptId) ||
@@ -474,6 +493,45 @@ export function parseLocalReceiptSummary(value: unknown): PanelReceiptSummary | 
     !isIsoTimestamp(value.capturedAt) ||
     (value.status !== "ATTEMPTED" && value.status !== "SITE_CONFIRMED") ||
     value.derivedStatus !== "PENDING_ACCEPTANCE" ||
+    !isRecord(value.anchor) ||
+    !hasOnlyKeys(value.anchor, [
+      "anchoredAt",
+      "anchoredBy",
+      "blockNumber",
+      "chainId",
+      "configuration",
+      "contractAddress",
+      "error",
+      "explorerUrl",
+      "state",
+      "transactionHash",
+    ]) ||
+    !["CONFIGURED", "DISABLED", "INVALID"].includes(String(value.anchor.configuration)) ||
+    (value.anchor.state !== null &&
+      !ANCHOR_OPERATION_STATES.includes(value.anchor.state as AnchorOperationState)) ||
+    (value.anchor.chainId !== null &&
+      (typeof value.anchor.chainId !== "number" ||
+        !Number.isSafeInteger(value.anchor.chainId) ||
+        value.anchor.chainId <= 0)) ||
+    (value.anchor.contractAddress !== null &&
+      (typeof value.anchor.contractAddress !== "string" ||
+        !/^0x[0-9a-fA-F]{40}$/u.test(value.anchor.contractAddress))) ||
+    (value.anchor.transactionHash !== null && !isHash(value.anchor.transactionHash)) ||
+    (value.anchor.blockNumber !== null &&
+      (typeof value.anchor.blockNumber !== "string" ||
+        !/^(0|[1-9]\d*)$/u.test(value.anchor.blockNumber))) ||
+    (value.anchor.anchoredAt !== null && !isIsoTimestamp(value.anchor.anchoredAt)) ||
+    (value.anchor.anchoredBy !== null &&
+      (typeof value.anchor.anchoredBy !== "string" ||
+        !/^0x[0-9a-fA-F]{40}$/u.test(value.anchor.anchoredBy))) ||
+    (value.anchor.explorerUrl !== null &&
+      (typeof value.anchor.explorerUrl !== "string" ||
+        !value.anchor.explorerUrl.startsWith("https://"))) ||
+    (value.anchor.error !== null &&
+      (!isRecord(value.anchor.error) ||
+        !hasOnlyKeys(value.anchor.error, ["code", "message"]) ||
+        typeof value.anchor.error.code !== "string" ||
+        typeof value.anchor.error.message !== "string")) ||
     !isRecord(value.security) ||
     !hasOnlyKeys(value.security, [
       "encrypted",
@@ -533,6 +591,18 @@ export function parseLocalReceiptSummary(value: unknown): PanelReceiptSummary | 
     siteConfirmedAt: value.siteConfirmedAt,
     siteConfirmationSnippet: value.siteConfirmationSnippet,
     siteConfirmationOrigin: confirmationOrigin?.ok ? confirmationOrigin.origin : null,
+    anchor: {
+      anchoredAt: value.anchor.anchoredAt as string | null,
+      anchoredBy: value.anchor.anchoredBy as `0x${string}` | null,
+      blockNumber: value.anchor.blockNumber as string | null,
+      chainId: value.anchor.chainId as number | null,
+      configuration: value.anchor.configuration as PanelAnchorSummary["configuration"],
+      contractAddress: value.anchor.contractAddress as `0x${string}` | null,
+      error: value.anchor.error as PanelAnchorSummary["error"],
+      explorerUrl: value.anchor.explorerUrl as string | null,
+      state: value.anchor.state as AnchorOperationState | null,
+      transactionHash: value.anchor.transactionHash as `0x${string}` | null,
+    },
     security: {
       encrypted: true,
       encryptionAlgorithm: "AES-256-GCM",

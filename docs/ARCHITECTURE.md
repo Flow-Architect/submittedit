@@ -18,19 +18,23 @@ non-extractable installation identity, Goal 03-compatible signatures for
 local events, per-receipt AES-GCM ciphertext, staged plaintext migration, passphrase-encrypted
 `.submittedit` export/import, and key-aware deletion. Goal 11 adds the server-only encrypted-blob
 and signed-event relay foundation, durable PostgreSQL transaction/idempotency/abuse state, and real
-local-chain execution. The extension does not call it yet, no real relayer wallet exists, and no
-application transaction has been sent to Monad Testnet. Public verification remains unimplemented.
+local-chain execution. The extension integration connects that relay to a configured extension,
+adds durable browser-side anchor operations and progress UI, and independently verifies the chain,
+registry runtime/protocol, transaction event, and stored state before persisting chain metadata.
+The full path is exercised in real Chromium, PostgreSQL, Next.js, and Anvil with only ephemeral
+local accounts. No extension application transaction has been sent to Monad Testnet; hosted
+operations, authority attachment, and the public verifier remain unimplemented.
 
 ## Workspace boundaries
 
-| Path                       | Responsibility                                                                          | May depend on                               |
-| -------------------------- | --------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `apps/web`                 | Fictional filing portal and authority APIs; future verifier and relay                   | shared packages                             |
-| `apps/extension`           | Manifest V3 capture plus signed, encrypted private receipt storage and portable export  | browser-safe shared packages                |
-| `packages/receipt-core`    | Canonical receipt schemas, event hashing, lifecycle and capture rules                   | `@noble/hashes`; browser-safe APIs only     |
-| `packages/contract-client` | Generated registry ABI/deployment metadata, stage mapping, and strict anchor projection | `viem`; reviewed public deployment manifest |
-| `packages/ui`              | Shared brand metadata, semantic CSS tokens, and source vector assets                    | No application or receipt-domain dependency |
-| `contracts`                | Linked lifecycle registry, tests, guarded deploy and ABI tooling                        | dependency-free Solidity                    |
+| Path                       | Responsibility                                                                           | May depend on                               |
+| -------------------------- | ---------------------------------------------------------------------------------------- | ------------------------------------------- |
+| `apps/web`                 | Fictional portal/authority APIs and the encrypted signed-event relay                     | shared packages                             |
+| `apps/extension`           | Capture, private receipt vault, relay handoff, and independent chain verification        | browser-safe shared packages                |
+| `packages/receipt-core`    | Canonical receipt schemas, event hashing, lifecycle and capture rules                    | `@noble/hashes`; browser-safe APIs only     |
+| `packages/contract-client` | Registry ABI/metadata, strict anchor projection, discovery, and signer-free verification | `viem`; reviewed public deployment manifest |
+| `packages/ui`              | Shared brand metadata, semantic CSS tokens, and source vector assets                     | No application or receipt-domain dependency |
+| `contracts`                | Linked lifecycle registry, tests, guarded deploy and ABI tooling                         | dependency-free Solidity                    |
 
 Applications may consume shared packages. Shared packages must not import application code. `receipt-core` must remain usable in browser and Node runtimes. Contract source and reviewed public deployment metadata belong in Git; compiler output, Foundry cache/broadcasts, keys, and environment secrets do not.
 
@@ -38,11 +42,12 @@ Applications may consume shared packages. Shared packages must not import applic
 
 ### Local browser
 
-The current extension splits storage across one validated schema-4 `chrome.storage.local` record
+The current extension splits storage across one validated schema-5 `chrome.storage.local` record
 and an extension-origin IndexedDB crypto vault. Chrome storage contains settings, minimal
 exact-origin metadata, revoked-origin history, migration metadata, the public installation
-descriptor/fingerprint, and up to 50 minimal encrypted-receipt index entries. It contains no full
-receipt, captured value, confirmation snippet, private key, or AES key. IndexedDB stores the
+descriptor/fingerprint, up to 50 minimal encrypted-receipt index entries, and up to 100 public
+resumable anchor operations. It contains no full receipt, captured value, confirmation snippet,
+private key, or AES key. IndexedDB stores the
 non-extractable P-256 signing `CryptoKey`, one non-extractable AES-256-GCM key per receipt, and the
 versioned ciphertext blobs. Chrome's permission store—not enabled-origin metadata—is authoritative
 for site access.
@@ -65,14 +70,24 @@ event, preserves the existing Attempted signature, signs/verifies the new event 
 identity, and atomically replaces the receipt ciphertext. The status remains Pending acceptance.
 Schema-3 plaintext receipts migrate copy-on-write only after their unchanged event cores, IDs,
 hashes, links, and timestamps are validated, signed, encrypted, and journaled durably. The current
-extension makes no portal, upload, relay, RPC, or Monad request.
+schema-5 migration adds an empty anchor-operation list without rewriting those ciphertexts.
+
+When relay and RPC endpoints are present in the reviewed build configuration, each saved local
+event creates one deterministic operation before network use. The worker uploads the existing
+authenticated ciphertext, posts only the matching signed event/public descriptor, follows the
+opaque relay status, then independently reads the configured chain. `CHAIN_EVIDENCE_CONFIRMED`
+requires the expected chain, runtime fingerprint/protocol, successful transaction destination,
+exact decoded event fields, and compatible stored registry state. Public transaction metadata is
+then copied into the encrypted receipt and the durable operation. The extension has no blockchain
+signer or wallet path. An unconfigured build makes no relay or RPC request.
 
 One-receipt export uses a confirmed passphrase, PBKDF2-SHA-256 with a fresh salt and fixed 600,000
 iteration work factor, and AES-256-GCM to create a versioned `.submittedit` package. Import
 authenticates, decrypts, validates, recomputes, and verifies before re-encrypting with a new local
 receipt key. A foreign public identity is preserved and read-only; its private key is never
 imported. Delete-one removes index/blob/key, while delete-all also destroys the installation
-identity. A fragment-only future-share helper exists, but no hosted blob or live link exists.
+identity. A fragment-only future-share helper exists, but no live share link or decryption service
+exists; relay upload contains no fragment secret or decryption key.
 
 ### Hosted services
 
@@ -83,7 +98,9 @@ API responses, logs, or client bundles. The web application also stores versione
 ciphertext, immutable relay arguments, prepared transaction hashes/nonces,
 confirmation/history state, keyed rate counters, daily fee reservations, and signer nonce
 allocation. It never stores a decryption key, plaintext receipt, signed request body, or relayer
-private key. Raw extension-captured form values must not enter server logs.
+private key. The bounded signed event core is parsed transiently and may contain privacy-filtered
+ordinary submitted values; raw extension-captured form values must not enter database rows or
+server logs. The current portal/integration is synthetic-data-only.
 
 ### Monad Testnet
 
@@ -98,14 +115,16 @@ The contract is permissionless: any address may submit a structurally valid anch
 - Next.js uses the App Router, and WXT produces the Chrome Manifest V3 foundation.
 - WXT produces an MV3 module service worker and side-panel entry point. An explicit toolbar-action
   handler opens the panel inside the user gesture so Chrome can provide the narrow `activeTab`
-  grant; the production manifest has no mandatory host permissions and declares only optional
-  HTTP/HTTPS host capacity. `scripting` dynamically registers the reviewed capture bundle for the
+  grant. Portal capture declares only optional HTTP/HTTPS capacity. An unconfigured build has no
+  mandatory hosts; a configured build adds exactly the public relay and RPC origins. `scripting`
+  dynamically registers the reviewed capture bundle for the
   exact set of origins with live permission; the manifest's `content_scripts` array remains empty.
   The already-open granted tab receives the bundle immediately, future navigations receive it at
   `document_start`, and revocation unregisters/disposes it.
 - The Goal 06 data layer uses parameterized `postgres` tagged templates against PostgreSQL 17.
   Numbered migrations are applied transactionally and recorded in `schema_migrations`; Goal 11
-  adds `0002_relay_foundation` after `0001_demo_filing`.
+  adds `0002_relay_foundation` after `0001_demo_filing`, and the extension integration adds
+  `0003_relay_blob_idempotency` for exact concurrent ciphertext retries.
 - Vitest covers deterministic unit, cryptographic, migration, and PostgreSQL integration checks.
   Playwright verifies the real portal/API lifecycle over HTTP and reproduces receipt vectors from
   the built ESM package in real Chromium. The extension Playwright path loads the production
@@ -113,7 +132,10 @@ The contract is permissionless: any address may submit a structurally valid anch
   restart, deduplication, resubmission, revocation, selected website evidence, SPA/redirect/history
   binding, cross-origin consent, non-extractable CryptoKey persistence, P-256 signing, IndexedDB
   AES-GCM ciphertext, plaintext-index absence, `.submittedit` export, wrong-passphrase failure,
-  clean-profile import, duplicate replacement, and key-aware deletion.
+  clean-profile import, duplicate replacement, and key-aware deletion. A separate configured
+  persistent-Chromium harness starts the real Next/PostgreSQL relay and clean Anvil registry,
+  verifies four distinct local transactions, restarts browser/server state, and exercises outage,
+  wrong-network, contract-mismatch, idempotency, and privacy boundaries.
 - CI provisions a dedicated non-secret PostgreSQL service, applies migrations, repeats the root
   quality gate and browser scenarios, installs Playwright Chromium for the unpacked-extension
   persistent-context test, and runs Monad Foundry formatting/build/test commands in a separate job.
@@ -172,18 +194,21 @@ format. Each new record carries independent random receipt/attempt/nonce/documen
 capture and origin metadata, the canonical Attempted event, and a bounded confirmation context.
 Goal 10 projects that validated record into a `SUBMITTEDIT_PRIVATE_RECEIPT` bundle containing a
 strict protocol `Receipt` whose locally owned events have verified extension signatures. Authority
-and chain-anchor slots remain absent. A legacy schema-2 Attempted record migrates intact without an
-invented historical tab binding; the schema-3-to-secure-schema-4 migration preserves every event
-core/hash/time and signs only protocol-compatible events.
+slots remain absent. Chain-anchor slots begin absent and may be filled only with independently
+verified public contract evidence for that exact event. A legacy schema-2 Attempted record migrates
+intact without an invented historical tab binding; the schema-3-to-secure-schema-4 migration
+preserves every event core/hash/time and signs only protocol-compatible events.
 
-The persistent schema-4 Chrome record is a public/minimal index. Receipt bundles are canonicalized
-and encrypted into versioned `SUBMITTEDIT_ENCRYPTED_RECEIPT` envelopes in IndexedDB. Authenticated
+The persistent schema-5 Chrome record is a public/minimal index plus strictly parsed durable anchor
+operations. Receipt bundles are canonicalized and encrypted into versioned
+`SUBMITTEDIT_ENCRYPTED_RECEIPT` envelopes in IndexedDB. Authenticated
 metadata binds format/version, AES-256-GCM, blob/receipt/public-key identity, receipt schema, and key
 version. The separate IndexedDB object stores hold the non-extractable installation key,
-non-extractable per-receipt AES keys, ciphertext blobs, and a versioned migration journal. Copy-on-
-write staging prevents plaintext removal before every encrypted artifact is durable. Secure-state
-parse, key lookup, AES authentication, event hash/link, or signature failure leaves data unchanged
-and fails closed.
+non-extractable per-receipt AES keys, ciphertext blobs, and a versioned migration journal.
+Copy-on-write staging prevents plaintext removal before every encrypted artifact is durable. The
+schema-4-to-5 migration preserves every locator and adds an empty operation collection.
+Secure-state parse, key lookup, AES authentication, event hash/link, or signature failure leaves
+data unchanged and fails closed.
 
 At most one confirmation context is active per tab; a later intentional attempt supersedes the
 older context without deleting its Attempted evidence. Closing the tab expires the active context.
@@ -193,8 +218,10 @@ requires a separate exact-origin permission and then an explicit checkbox in rev
 the ephemeral selection session, and a save ID makes an exact retry idempotent while any second Site
 confirmed event is rejected.
 
-The service worker performs no polling and keeps no receipt truth solely in module globals. On
-startup, install, browser restart, permission changes, or panel bootstrap it restricts Chrome local
+The service worker keeps no receipt truth solely in module globals. An unconfigured build performs
+no service polling. A configured build uses bounded relay polling and a one-minute recovery alarm
+only for persisted incomplete anchor operations. On startup, install, browser restart, permission
+changes, or panel bootstrap it restricts Chrome local
 storage to trusted extension contexts where supported, then reloads the index/vault and
 reconciles exact origins with `chrome.permissions`. The transient in-worker promise queue only
 serializes overlapping capture/navigation/crypto writes; persisted attempt IDs remain the dedupe
@@ -205,9 +232,12 @@ The panel's reachable states include Welcome, Site not enabled, Permission reque
 Permission denied, Checking, No form, Prepared, Capturing, Signing, Encrypting, Attempted,
 confirmation available, origin warning, selection/review, Site confirmed, encrypted receipt ready,
 export/import/duplicate replacement, per-receipt deletion, delete-all, cryptographic failure,
-Unavailable, and Error. Imported foreign-identity receipts are visibly read-only. Site confirmed
-always displays Pending acceptance and the missing authoritative acknowledgment. Receipt pending,
-Chain anchoring, and Verified remain future network/chain vocabulary only.
+Unavailable, and Error. Configured builds additionally expose encrypted-proof upload, relay
+submission, transaction/confirmation wait, contract verification, chain evidence confirmed,
+relay/RPC unavailable, wrong network, contract mismatch, reconciliation required, and bounded
+failure states. Imported foreign-identity receipts are visibly read-only. Site confirmed and every
+chain-progress state always display Pending acceptance and the missing authoritative
+acknowledgment.
 See [the extension guide](EXTENSION.md) and [privacy boundary](PRIVACY.md).
 
 ## Monad safety boundary
@@ -220,21 +250,23 @@ The manifest also records one synthetic development-only `ATTEMPTED` anchor as a
 
 The Goal 03 event core remains the evidence source of truth. `receipt-core` recomputes its domain-separated Keccak-256 event hash and produces a seven-field chain-anchor projection: schema version, chain ID, contract address, receipt ID, stage, previous event hash, and event hash.
 
-`contract-client` exports the verified chain/address/read configuration and deployment metadata generated from the manifest. It strictly accepts exactly those projection fields, validates their Monad Testnet and bytes32 encoding, preserves schema/chain/address metadata in the returned request, maps event stages to the fixed Solidity enum, and adds the established extension-key and applicable authority-key fingerprints. Prepared and Verification failed cannot become contract events. Key fingerprints are not signatures, and Goal 05 does not invent a production public-key derivation rule that Goal 03 did not define.
+`contract-client` exports the verified chain/address/read configuration and deployment metadata generated from the manifest. It strictly accepts exactly those projection fields, validates their Monad Testnet and bytes32 encoding, preserves schema/chain/address metadata in the returned request, maps event stages to the fixed Solidity enum, and adds the established extension-key and applicable authority-key fingerprints. Its signer-free verifier separately validates network, runtime/protocol, transaction receipt/destination, the exact decoded event, stored registry projection, and unambiguous event discovery. Prepared and Verification failed cannot become contract events. Key fingerprints are not signatures, and Goal 05 does not invent a production public-key derivation rule that Goal 03 did not define.
 
 The current extension creates, signs, verifies, and encrypts a canonical Attempted event and may add
 one likewise signed/encrypted user-approved Site confirmed event locally. Site confirmed remains
-Pending acceptance. Export/import is local; no ciphertext is uploaded. Later extension work may
-request the Goal 06 fictional authority's signature only after constructing a matching terminal
-event core. The server relay now verifies local signed evidence, stores ciphertext opaquely,
-prechecks the real registry, and tracks local-chain transactions without changing the event core.
+Pending acceptance. Export/import remains local. When configured, the extension uploads the same
+authenticated ciphertext, sends the matching signed local event to the server relay, persists its
+operation/status locators, and independently verifies resulting chain evidence before updating the
+encrypted receipt. Later extension work may request the Goal 06 fictional authority's signature
+only after constructing a matching terminal event core. The server relay verifies local signed
+evidence, stores ciphertext opaquely, prechecks the real registry, and tracks local-chain
+transactions without changing the event core.
 Its deterministic prepared-transaction hash, PostgreSQL nonce allocation, event-hash lock, and fee
 reservation make concurrent/restarted execution recoverable. It currently accepts Attempted and
-Site confirmed only, has no extension caller or production wallet, and has not written to Monad
-Testnet. A future verifier will
-independently recompute event/signature checks, compare expected linkage and stage with confirmed
-contract state/logs, and account for chain confirmation. Goals 10 and the Goal 11 local checkpoint
-perform no application Monad transaction. The
-contract alone cannot make Accepted or Rejected truthful; those displayed receipt outcomes
+Site confirmed only, has no hosted production wallet, and has not received an extension-originated
+Monad Testnet write. The extension's verifier now recomputes the expected public evidence and
+compares it with confirmed contract state/logs; the final public receipt verifier remains future
+work. The local extension integration performs no application Monad transaction. The contract alone
+cannot make Accepted or Rejected truthful; those displayed receipt outcomes
 additionally require a verified authority signature. See
 [the contract reference](CONTRACT.md) and [threat model](THREAT_MODEL.md).

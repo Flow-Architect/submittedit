@@ -12,6 +12,11 @@ interface EncryptedBlobRow {
   readonly public_id: string;
 }
 
+const envelopesEqual = (
+  first: EncryptedReceiptEnvelope,
+  second: EncryptedReceiptEnvelope,
+): boolean => JSON.stringify(first) === JSON.stringify(second);
+
 interface EncryptedBlobServiceOptions {
   readonly database: DemoDatabase;
   readonly randomId?: () => string;
@@ -50,6 +55,24 @@ export class EncryptedBlobService {
       );
     }
 
+    const existingRows = await this.#database<EncryptedBlobRow[]>`
+      SELECT public_id, encrypted_envelope, byte_length, created_at
+      FROM relay_encrypted_blobs
+      WHERE envelope_blob_id = ${envelope.authenticatedMetadata.blobId}
+      LIMIT 1
+    `;
+    const existing = existingRows[0] ? toStoredBlob(existingRows[0]) : null;
+    if (existing) {
+      if (existing.byteLength !== byteLength || !envelopesEqual(existing.envelope, envelope)) {
+        throw new RelayServiceError(
+          "ENCRYPTED_BLOB_CONFLICT",
+          "That authenticated encrypted-blob identifier is already bound to different bytes.",
+          409,
+        );
+      }
+      return existing;
+    }
+
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const publicId = this.#randomId();
       try {
@@ -78,7 +101,30 @@ export class EncryptedBlobService {
         }
         return toStoredBlob(row);
       } catch (error) {
-        if (!isUniqueViolation(error) || attempt === 2) {
+        if (!isUniqueViolation(error)) {
+          throw error;
+        }
+        const concurrentRows = await this.#database<EncryptedBlobRow[]>`
+          SELECT public_id, encrypted_envelope, byte_length, created_at
+          FROM relay_encrypted_blobs
+          WHERE envelope_blob_id = ${envelope.authenticatedMetadata.blobId}
+          LIMIT 1
+        `;
+        const concurrent = concurrentRows[0] ? toStoredBlob(concurrentRows[0]) : null;
+        if (concurrent) {
+          if (
+            concurrent.byteLength !== byteLength ||
+            !envelopesEqual(concurrent.envelope, envelope)
+          ) {
+            throw new RelayServiceError(
+              "ENCRYPTED_BLOB_CONFLICT",
+              "That authenticated encrypted-blob identifier is already bound to different bytes.",
+              409,
+            );
+          }
+          return concurrent;
+        }
+        if (attempt === 2) {
           throw error;
         }
       }

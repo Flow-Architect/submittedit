@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { testDatabase } from "./database";
 
 describe("fresh PostgreSQL migration", () => {
-  it("creates the durable demo and relay entities and records both versions", async () => {
+  it("creates the durable demo and relay entities and records every version", async () => {
     const rows = await testDatabase`
       SELECT
         to_regclass('public.demo_submissions')::text AS submissions,
@@ -35,6 +35,7 @@ describe("fresh PostgreSQL migration", () => {
     expect(versions.map((row) => row.version)).toEqual([
       "0001_demo_filing",
       "0002_relay_foundation",
+      "0003_relay_blob_idempotency",
     ]);
   });
 

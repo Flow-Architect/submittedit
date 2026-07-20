@@ -1,7 +1,10 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 
-const outputDirectory = resolve(".output/chrome-mv3");
+const outputDirectory = resolve(
+  process.env.SUBMITTEDIT_EXTENSION_OUT_DIR ?? ".output",
+  "chrome-mv3",
+);
 const manifestPath = join(outputDirectory, "manifest.json");
 const requiredPermissions = new Set([
   "activeTab",
@@ -94,8 +97,18 @@ for (const permission of actualPermissions) {
   }
 }
 
-if ((manifest.host_permissions ?? []).length !== 0) {
-  fail("install-time host_permissions must be empty");
+const configuredHostPermissions = [
+  ...new Set(
+    [process.env.WXT_SUBMITTEDIT_RELAY_URL, process.env.WXT_SUBMITTEDIT_RPC_URL]
+      .filter(Boolean)
+      .map((value) => `${new URL(value).origin}/*`),
+  ),
+].sort();
+if (
+  JSON.stringify([...(manifest.host_permissions ?? [])].sort()) !==
+  JSON.stringify(configuredHostPermissions)
+) {
+  fail("install-time host_permissions must exactly match the configured relay and RPC origins");
 }
 if (
   JSON.stringify(manifest).includes("<all_urls>") ||
@@ -160,9 +173,10 @@ for (const file of textFiles) {
   const contents = await readFile(file, "utf8");
   const relativePath = relative(outputDirectory, file);
   for (const forbidden of [
-    "/home/ascabrya",
-    "submittedit-workspace/control",
-    "AGENTS.override.md",
+    "/home/",
+    "/control/",
+    "\\control\\",
+    ["AGENTS", "override", "md"].join("."),
     "BEGIN PRIVATE KEY",
     "BEGIN EC PRIVATE KEY",
     "localhost:3000",
@@ -225,6 +239,15 @@ for (const requiredRuntimeBoundary of [
   "SENSITIVE_HIDDEN_TOKEN",
   "FILE_METADATA_NOT_OPTED_IN",
   "SITE_CONFIRMED",
+  "UPLOADING_ENCRYPTED_PROOF",
+  "SUBMITTED_TO_RELAY",
+  "WAITING_FOR_CONFIRMATIONS",
+  "VERIFYING_CONTRACT_STATE",
+  "CHAIN_EVIDENCE_CONFIRMED",
+  "RPC_UNAVAILABLE",
+  "WRONG_NETWORK",
+  "CONTRACT_MISMATCH",
+  "RECONCILIATION_REQUIRED",
 ]) {
   if (!javascriptSource.includes(requiredRuntimeBoundary)) {
     fail(`compiled runtime is missing reviewed boundary ${requiredRuntimeBoundary}`);
@@ -250,11 +273,14 @@ for (const requiredCaptureCapability of [
 
 for (const forbiddenRuntimeCapability of [
   "captureVisibleTab",
+  "createWalletClient",
+  "privateKeyToAccount",
+  "SUBMITTEDIT_RELAYER_PRIVATE_KEY",
+  "SUBMITTEDIT_DEPLOYER_PRIVATE_KEY",
   "getDisplayMedia",
   "tabCapture",
   "desktopCapture",
   "html2canvas",
-  "testnet.monad",
 ]) {
   if (javascriptSource.includes(forbiddenRuntimeCapability)) {
     fail(`compiled runtime contains out-of-scope capability: ${forbiddenRuntimeCapability}`);

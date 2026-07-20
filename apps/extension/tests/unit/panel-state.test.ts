@@ -22,6 +22,18 @@ const attemptedSummary = {
   siteConfirmedAt: null,
   siteConfirmationSnippet: null,
   siteConfirmationOrigin: null,
+  anchor: {
+    anchoredAt: null,
+    anchoredBy: null,
+    blockNumber: null,
+    chainId: 10143,
+    configuration: "CONFIGURED" as const,
+    contractAddress: "0x63914900a2D3571F92506821a76c4036C3e25883" as const,
+    error: null,
+    explorerUrl: null,
+    state: null,
+    transactionHash: null,
+  },
   security: {
     encrypted: true as const,
     encryptionAlgorithm: "AES-256-GCM" as const,

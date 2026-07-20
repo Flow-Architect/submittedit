@@ -15,7 +15,7 @@ import {
   storeImportedReceiptBundle,
   validateSecureExtensionState,
 } from "../../lib/secure-storage";
-import { verifyPrivateReceiptBundle } from "../../lib/private-receipt";
+import { attachVerifiedChainAnchor, verifyPrivateReceiptBundle } from "../../lib/private-receipt";
 import { createSiteConfirmationEvent, siteConfirmationSnippet } from "../../lib/site-confirmation";
 import {
   appendAttemptReceipt,
@@ -106,7 +106,7 @@ function siteConfirmedReceipt(): StoredAttemptReceipt {
 }
 
 describe("secure local storage migration", () => {
-  it("stages a schema-v3 plaintext receipt before atomically publishing a minimal schema-v4 index", async () => {
+  it("stages a schema-v3 plaintext receipt before atomically publishing a minimal schema-v5 index", async () => {
     const receipt = siteConfirmedReceipt();
     const original = legacyState([receipt]);
     const area = new MemoryStorage({
@@ -119,7 +119,8 @@ describe("secure local storage migration", () => {
     const persistent = validateSecureExtensionState(area.values[EXTENSION_STORAGE_KEY]);
     expect(persistent).not.toBeNull();
     expect(persistent).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
+      anchorOperations: [],
       migration: { sourceVersion: 3, migratedAt: LATER },
       receiptIndex: [{ receiptId: receipt.receiptId, currentStage: "SITE_CONFIRMED" }],
     });
@@ -166,7 +167,31 @@ describe("secure local storage migration", () => {
     expect(vault.journal).toBeNull();
   });
 
-  it("fails closed on a malformed schema-v4 index instead of silently resetting it", async () => {
+  it("upgrades a valid encrypted schema-v4 index without rewriting its ciphertext", async () => {
+    const area = new MemoryStorage();
+    const vault = new MemoryCryptoVault();
+    const initial = await loadSecureExtensionState(area, vault, { now: NOW });
+    const receipt = attemptedReceipt();
+    const saved = await saveSecureExtensionState(
+      area,
+      vault,
+      appendAttemptReceipt(initial.working, receipt).state,
+      LATER,
+    );
+    const { anchorOperations, ...schemaFour } = saved.persistent;
+    expect(anchorOperations).toEqual([]);
+    area.values[EXTENSION_STORAGE_KEY] = { ...schemaFour, schemaVersion: 4 };
+    const originalBlobIds = [...vault.blobs.keys()];
+
+    const upgraded = await loadSecureExtensionState(area, vault, {
+      now: "2026-07-17T12:02:00.000Z",
+    });
+    expect(upgraded.persistent).toMatchObject({ schemaVersion: 5, anchorOperations: [] });
+    expect(upgraded.bundles.get(receipt.receiptId)?.operational).toEqual(receipt);
+    expect([...vault.blobs.keys()]).toEqual(originalBlobIds);
+  });
+
+  it("fails closed on a malformed legacy schema-v4 index instead of silently resetting it", async () => {
     const area = new MemoryStorage({
       [EXTENSION_STORAGE_KEY]: { schemaVersion: 4, receiptIndex: [{ fake: true }] },
     });
@@ -342,6 +367,41 @@ describe("portable receipt import and deletion", () => {
     expect(targetVault.blobs.size).toBe(1);
   });
 
+  it("rejects imported chain-anchor claims until they can be independently reverified", async () => {
+    const sourceArea = new MemoryStorage();
+    const sourceVault = new MemoryCryptoVault();
+    const sourceInitial = await loadSecureExtensionState(sourceArea, sourceVault, { now: NOW });
+    const receipt = attemptedReceipt();
+    const source = await saveSecureExtensionState(
+      sourceArea,
+      sourceVault,
+      appendAttemptReceipt(sourceInitial.working, receipt).state,
+      NOW,
+    );
+    const anchored = await attachVerifiedChainAnchor(
+      source.bundles.get(receipt.receiptId),
+      receipt.event.eventHash,
+      {
+        anchoredAt: LATER,
+        blockNumber: "7",
+        chainId: 31_337,
+        contractAddress: "0x1000000000000000000000000000000000000001",
+        transactionHash: `0x${"3".repeat(64)}`,
+      },
+      LATER,
+    );
+
+    await expect(
+      storeImportedReceiptBundle(
+        new MemoryStorage(),
+        new MemoryCryptoVault(),
+        anchored,
+        false,
+        LATER,
+      ),
+    ).rejects.toThrow(/independent public verification/u);
+  });
+
   it("deletes one receipt with its key, then destroys all owned data without touching unrelated storage", async () => {
     const area = new MemoryStorage({ unrelated: { preserve: true } });
     const vault = new MemoryCryptoVault();
@@ -373,7 +433,8 @@ describe("portable receipt import and deletion", () => {
 
     const reset = await deleteAllSecureExtensionData(area, vault, LATER);
     expect(reset.persistent).toMatchObject({
-      schemaVersion: 4,
+      schemaVersion: 5,
+      anchorOperations: [],
       identity: null,
       receiptIndex: [],
     });

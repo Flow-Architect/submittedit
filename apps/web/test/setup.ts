@@ -6,6 +6,7 @@ import { testDatabase } from "./database";
 const migrationUrls = [
   new URL("../db/migrations/0001_demo_filing.sql", import.meta.url),
   new URL("../db/migrations/0002_relay_foundation.sql", import.meta.url),
+  new URL("../db/migrations/0003_relay_blob_idempotency.sql", import.meta.url),
 ];
 
 beforeAll(async () => {

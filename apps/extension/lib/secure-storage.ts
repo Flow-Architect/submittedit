@@ -1,6 +1,8 @@
 import {
   canonicalize,
   parsePublicKeyDescriptor,
+  type HashHex,
+  type LifecycleEventEnvelope,
   type PublicKeyDescriptor,
   type ReceiptId,
 } from "@submittedit/receipt-core";
@@ -18,6 +20,14 @@ import {
 } from "./encrypted-receipt";
 import { inspectNormalizedOrigin } from "./origin";
 import {
+  MAX_ANCHOR_OPERATIONS,
+  createAnchorOperation,
+  parseAnchorOperation,
+  updateAnchorOperation,
+  type AnchorOperation,
+} from "./anchor-state";
+import {
+  attachVerifiedChainAnchor,
   createOrUpdatePrivateReceiptBundle,
   importedPrivateReceiptBundle,
   verifyPrivateReceiptBundle,
@@ -43,8 +53,9 @@ import {
   type MigrationJournalEntry,
 } from "./vault";
 
-export const SECURE_EXTENSION_STORAGE_SCHEMA_VERSION = 4 as const;
+export const SECURE_EXTENSION_STORAGE_SCHEMA_VERSION = 5 as const;
 export const ENCRYPTED_RECEIPT_INDEX_VERSION = 1 as const;
+const LEGACY_SECURE_EXTENSION_STORAGE_SCHEMA_VERSION = 4 as const;
 
 export interface SecureIdentityMetadata {
   readonly createdAt: string;
@@ -70,6 +81,7 @@ export interface EncryptedReceiptIndexEntry {
 
 export interface SecureExtensionLocalState {
   readonly schemaVersion: typeof SECURE_EXTENSION_STORAGE_SCHEMA_VERSION;
+  readonly anchorOperations: readonly AnchorOperation[];
   readonly enabledOrigins: Record<string, EnabledOriginMetadata>;
   readonly hasSeenWelcome: boolean;
   readonly identity: SecureIdentityMetadata | null;
@@ -228,6 +240,7 @@ export function validateSecureExtensionState(value: unknown): SecureExtensionLoc
     !isRecord(value) ||
     !exactKeys(value, [
       "schemaVersion",
+      "anchorOperations",
       "enabledOrigins",
       "hasSeenWelcome",
       "identity",
@@ -238,6 +251,8 @@ export function validateSecureExtensionState(value: unknown): SecureExtensionLoc
       "updatedAt",
     ]) ||
     value.schemaVersion !== SECURE_EXTENSION_STORAGE_SCHEMA_VERSION ||
+    !Array.isArray(value.anchorOperations) ||
+    value.anchorOperations.length > MAX_ANCHOR_OPERATIONS ||
     !Array.isArray(value.receiptIndex) ||
     value.receiptIndex.length > MAX_LOCAL_RECEIPTS
   ) {
@@ -273,8 +288,23 @@ export function validateSecureExtensionState(value: unknown): SecureExtensionLoc
   if (receiptIndex.length > 0 && identity === null) {
     return null;
   }
+  const anchorOperations: AnchorOperation[] = [];
+  const eventHashes = new Set<string>();
+  for (const item of value.anchorOperations) {
+    const operation = parseAnchorOperation(item);
+    if (
+      !operation ||
+      eventHashes.has(operation.eventHash) ||
+      !receiptIds.has(operation.receiptId)
+    ) {
+      return null;
+    }
+    eventHashes.add(operation.eventHash);
+    anchorOperations.push(operation);
+  }
   return {
     schemaVersion: SECURE_EXTENSION_STORAGE_SCHEMA_VERSION,
+    anchorOperations,
     enabledOrigins: projection.enabledOrigins,
     hasSeenWelcome: projection.hasSeenWelcome,
     identity,
@@ -305,6 +335,7 @@ function initialSecureState(initializedAt = new Date().toISOString()): SecureExt
   const initial = createInitialExtensionState(initializedAt);
   return {
     schemaVersion: SECURE_EXTENSION_STORAGE_SCHEMA_VERSION,
+    anchorOperations: [],
     enabledOrigins: initial.enabledOrigins,
     hasSeenWelcome: initial.hasSeenWelcome,
     identity: null,
@@ -433,6 +464,15 @@ async function decryptIndexedBundles(
     }
     bundles.set(entry.receiptId, bundle);
   }
+  for (const operation of persistent.anchorOperations) {
+    const bundle = bundles.get(operation.receiptId);
+    const event = bundle?.receipt.events.find(
+      (candidate) => candidate.eventHash === operation.eventHash,
+    );
+    if (!event || event.core.stage !== operation.stage) {
+      throw new Error("A durable anchor operation does not match its encrypted signed event.");
+    }
+  }
   return bundles;
 }
 
@@ -514,6 +554,7 @@ async function migrateLegacyState(
 
   const persistent = await writePersistentState(area, {
     schemaVersion: SECURE_EXTENSION_STORAGE_SCHEMA_VERSION,
+    anchorOperations: [],
     enabledOrigins: legacy.enabledOrigins,
     hasSeenWelcome: legacy.hasSeenWelcome,
     identity: identityMetadata(identity),
@@ -552,6 +593,44 @@ export async function loadSecureExtensionState(
 
   const secure = validateSecureExtensionState(stored);
   if (!secure) {
+    if (
+      isRecord(stored) &&
+      stored.schemaVersion === LEGACY_SECURE_EXTENSION_STORAGE_SCHEMA_VERSION &&
+      exactKeys(stored, [
+        "schemaVersion",
+        "enabledOrigins",
+        "hasSeenWelcome",
+        "identity",
+        "initializedAt",
+        "migration",
+        "receiptIndex",
+        "settings",
+        "updatedAt",
+      ])
+    ) {
+      const migrated = validateSecureExtensionState({
+        ...stored,
+        schemaVersion: SECURE_EXTENSION_STORAGE_SCHEMA_VERSION,
+        anchorOperations: [],
+        updatedAt: now,
+      });
+      if (!migrated) {
+        throw new Error(
+          "The legacy encrypted local index is malformed; SubmittedIt will not replace it silently.",
+        );
+      }
+      const persistent = await writePersistentState(area, migrated);
+      const bundles = await decryptIndexedBundles(persistent, vault, cryptoProvider);
+      return { bundles, persistent, working: workingFromPersistent(persistent, bundles) };
+    }
+    if (
+      isRecord(stored) &&
+      stored.schemaVersion === LEGACY_SECURE_EXTENSION_STORAGE_SCHEMA_VERSION
+    ) {
+      throw new Error(
+        "The legacy encrypted local index is malformed; SubmittedIt will not replace it silently.",
+      );
+    }
     if (isRecord(stored) && stored.schemaVersion === SECURE_EXTENSION_STORAGE_SCHEMA_VERSION) {
       throw new Error(
         "The encrypted local index is malformed; SubmittedIt will not replace it or rotate keys silently.",
@@ -594,6 +673,9 @@ function persistentFromWorking(
 ): SecureExtensionLocalState {
   return {
     schemaVersion: SECURE_EXTENSION_STORAGE_SCHEMA_VERSION,
+    anchorOperations: prior.anchorOperations.filter((operation) =>
+      receiptIndex.some((entry) => entry.receiptId === operation.receiptId),
+    ),
     enabledOrigins: working.enabledOrigins,
     hasSeenWelcome: working.hasSeenWelcome,
     identity: identityMetadata(identity),
@@ -750,6 +832,9 @@ export async function storeImportedReceiptBundle(
   try {
     persistent = await writePersistentState(area, {
       ...loaded.persistent,
+      anchorOperations: loaded.persistent.anchorOperations.filter(
+        (operation) => operation.receiptId !== newEntry.receiptId,
+      ),
       receiptIndex,
       updatedAt: now,
     });
@@ -809,4 +894,274 @@ export function receiptSecurityMetadata(
   receiptId: ReceiptId,
 ): EncryptedReceiptIndexEntry | null {
   return persistent.receiptIndex.find((entry) => entry.receiptId === receiptId) ?? null;
+}
+
+export interface AnchorRelayArtifacts {
+  readonly bundle: PrivateReceiptBundle;
+  readonly envelope: EncryptedReceiptEnvelope;
+  readonly event: LifecycleEventEnvelope;
+  readonly index: EncryptedReceiptIndexEntry;
+  readonly publicKey: PublicKeyDescriptor;
+}
+
+export async function getAnchorRelayArtifacts(
+  area: LocalStorageArea,
+  vault: CryptoVault,
+  receiptId: ReceiptId,
+  eventHash: HashHex,
+  cryptoProvider: Crypto = globalThis.crypto,
+): Promise<AnchorRelayArtifacts> {
+  const loaded = await loadSecureExtensionState(area, vault, { cryptoProvider });
+  const bundle = loaded.bundles.get(receiptId);
+  const index = loaded.persistent.receiptIndex.find((entry) => entry.receiptId === receiptId);
+  if (!bundle || !index || bundle.ownership !== "LOCAL") {
+    throw new Error("Only a locally signed encrypted receipt can enter the relay lifecycle.");
+  }
+  const envelope = await vault.getEnvelope(index.blobId);
+  const signed = bundle.receipt.events.find((event) => event.eventHash === eventHash);
+  if (!envelope || !signed || !signed.extensionSignature) {
+    throw new Error("The encrypted receipt or its signed event is unavailable.");
+  }
+  const event: LifecycleEventEnvelope = {
+    core: signed.core,
+    eventHash: signed.eventHash,
+    extensionSignature: signed.extensionSignature,
+  };
+  return {
+    bundle,
+    envelope,
+    event,
+    index,
+    publicKey: bundle.receipt.extensionPublicKey,
+  };
+}
+
+export async function saveAnchorOperation(
+  area: LocalStorageArea,
+  vault: CryptoVault,
+  operationInput: AnchorOperation,
+  cryptoProvider: Crypto = globalThis.crypto,
+): Promise<LoadedSecureExtensionState> {
+  const operation = parseAnchorOperation(operationInput);
+  if (!operation) {
+    throw new Error("SubmittedIt refused to persist malformed anchor progress.");
+  }
+  const loaded = await loadSecureExtensionState(area, vault, { cryptoProvider });
+  const bundle = loaded.bundles.get(operation.receiptId);
+  const event = bundle?.receipt.events.find(
+    (candidate) => candidate.eventHash === operation.eventHash,
+  );
+  if (!event || event.core.stage !== operation.stage || bundle?.ownership !== "LOCAL") {
+    throw new Error("The anchor operation does not belong to a locally signed event.");
+  }
+  const previous = loaded.persistent.anchorOperations.find(
+    (candidate) => candidate.eventHash === operation.eventHash,
+  );
+  if (previous) {
+    const immutablePrevious = {
+      chainId: previous.chainId,
+      contractAddress: previous.contractAddress,
+      createdAt: previous.createdAt,
+      eventCount: previous.eventCount,
+      eventHash: previous.eventHash,
+      idempotencyKey: previous.idempotencyKey,
+      relayBaseUrl: previous.relayBaseUrl,
+      receiptId: previous.receiptId,
+      stage: previous.stage,
+    };
+    const immutableNext = {
+      chainId: operation.chainId,
+      contractAddress: operation.contractAddress,
+      createdAt: operation.createdAt,
+      eventCount: operation.eventCount,
+      eventHash: operation.eventHash,
+      idempotencyKey: operation.idempotencyKey,
+      relayBaseUrl: operation.relayBaseUrl,
+      receiptId: operation.receiptId,
+      stage: operation.stage,
+    };
+    if (
+      canonicalize(immutablePrevious) !== canonicalize(immutableNext) ||
+      (previous.relayBlobId !== null && previous.relayBlobId !== operation.relayBlobId) ||
+      (previous.statusToken !== null && previous.statusToken !== operation.statusToken) ||
+      (previous.transactionHash !== null &&
+        previous.transactionHash !== operation.transactionHash) ||
+      previous.counters.polls > operation.counters.polls ||
+      previous.counters.relayRequests > operation.counters.relayRequests ||
+      previous.counters.uploads > operation.counters.uploads ||
+      previous.counters.verifications > operation.counters.verifications ||
+      previous.state === "CHAIN_EVIDENCE_CONFIRMED"
+    ) {
+      throw new Error("SubmittedIt refused to rewrite immutable anchor-operation evidence.");
+    }
+  } else if (loaded.persistent.anchorOperations.length >= MAX_ANCHOR_OPERATIONS) {
+    throw new Error("SubmittedIt local anchor-operation storage is full.");
+  }
+  const persistent = await writePersistentState(area, {
+    ...loaded.persistent,
+    anchorOperations: [
+      operation,
+      ...loaded.persistent.anchorOperations.filter(
+        (candidate) => candidate.eventHash !== operation.eventHash,
+      ),
+    ],
+    updatedAt: operation.updatedAt,
+  });
+  return { ...loaded, persistent };
+}
+
+export async function ensureAnchorOperation(
+  area: LocalStorageArea,
+  vault: CryptoVault,
+  input: {
+    readonly chainId: number;
+    readonly contractAddress: `0x${string}`;
+    readonly eventHash: HashHex;
+    readonly now: string;
+    readonly receiptId: ReceiptId;
+    readonly relayBaseUrl: string;
+  },
+  cryptoProvider: Crypto = globalThis.crypto,
+): Promise<AnchorOperation> {
+  const loaded = await loadSecureExtensionState(area, vault, { cryptoProvider });
+  const existing = loaded.persistent.anchorOperations.find(
+    (operation) => operation.eventHash === input.eventHash,
+  );
+  if (existing) {
+    if (
+      existing.receiptId !== input.receiptId ||
+      existing.chainId !== input.chainId ||
+      existing.contractAddress.toLowerCase() !== input.contractAddress.toLowerCase() ||
+      existing.relayBaseUrl !== input.relayBaseUrl
+    ) {
+      throw new Error("The signed event is already bound to different anchor configuration.");
+    }
+    return existing;
+  }
+  const bundle = loaded.bundles.get(input.receiptId);
+  const index = loaded.persistent.receiptIndex.find((entry) => entry.receiptId === input.receiptId);
+  const event = bundle?.receipt.events.find((candidate) => candidate.eventHash === input.eventHash);
+  if (
+    !bundle ||
+    bundle.ownership !== "LOCAL" ||
+    !index ||
+    !event ||
+    (event.core.stage !== "ATTEMPTED" && event.core.stage !== "SITE_CONFIRMED")
+  ) {
+    throw new Error("Only a locally signed Attempted or Site confirmed event can be anchored.");
+  }
+  const operation = createAnchorOperation({
+    chainId: input.chainId,
+    contractAddress: input.contractAddress,
+    eventHash: event.eventHash,
+    localBlobId: index.blobId,
+    now: input.now,
+    receiptId: input.receiptId,
+    relayBaseUrl: input.relayBaseUrl,
+    stage: event.core.stage,
+  });
+  await saveAnchorOperation(area, vault, operation, cryptoProvider);
+  return operation;
+}
+
+export async function getAnchorOperation(
+  area: LocalStorageArea,
+  vault: CryptoVault,
+  eventHash: HashHex,
+  cryptoProvider: Crypto = globalThis.crypto,
+): Promise<AnchorOperation | null> {
+  const loaded = await loadSecureExtensionState(area, vault, { cryptoProvider });
+  return (
+    loaded.persistent.anchorOperations.find((operation) => operation.eventHash === eventHash) ??
+    null
+  );
+}
+
+export async function storeVerifiedChainAnchor(
+  area: LocalStorageArea,
+  vault: CryptoVault,
+  input: {
+    readonly anchoredAt: string;
+    readonly anchoredBy: `0x${string}`;
+    readonly blockNumber: string;
+    readonly chainId: number;
+    readonly contractAddress: `0x${string}`;
+    readonly eventHash: HashHex;
+    readonly transactionHash: HashHex;
+  },
+  now = new Date().toISOString(),
+  cryptoProvider: Crypto = globalThis.crypto,
+): Promise<LoadedSecureExtensionState> {
+  const loaded = await loadSecureExtensionState(area, vault, { cryptoProvider });
+  const operation = loaded.persistent.anchorOperations.find(
+    (candidate) => candidate.eventHash === input.eventHash,
+  );
+  const bundle = operation ? loaded.bundles.get(operation.receiptId) : null;
+  const index = operation
+    ? loaded.persistent.receiptIndex.find((entry) => entry.receiptId === operation.receiptId)
+    : null;
+  if (
+    !operation ||
+    !bundle ||
+    !index ||
+    operation.chainId !== input.chainId ||
+    operation.contractAddress.toLowerCase() !== input.contractAddress.toLowerCase()
+  ) {
+    throw new Error("The verified chain evidence does not match a durable local operation.");
+  }
+  const key = await vault.getReceiptKey(index.keyId);
+  if (!key || key.receiptId !== operation.receiptId) {
+    throw new Error("The receipt encryption key is unavailable.");
+  }
+  const anchoredBundle = await attachVerifiedChainAnchor(
+    bundle,
+    input.eventHash,
+    {
+      anchoredAt: input.anchoredAt,
+      blockNumber: input.blockNumber,
+      chainId: input.chainId,
+      contractAddress: input.contractAddress,
+      transactionHash: input.transactionHash,
+    },
+    now,
+    cryptoProvider,
+  );
+  const envelope = await encryptPrivateReceiptBundle(
+    anchoredBundle,
+    key.key,
+    undefined,
+    cryptoProvider,
+  );
+  await vault.putReceiptArtifacts(key, envelope);
+  const nextIndex = indexFromArtifacts(anchoredBundle, envelope, key);
+  const confirmed = updateAnchorOperation(operation, {
+    anchoredAt: input.anchoredAt,
+    anchoredBy: input.anchoredBy,
+    blockNumber: input.blockNumber,
+    lastError: null,
+    state: "CHAIN_EVIDENCE_CONFIRMED",
+    transactionHash: input.transactionHash,
+    updatedAt: now,
+  });
+  try {
+    const persistent = await writePersistentState(area, {
+      ...loaded.persistent,
+      anchorOperations: loaded.persistent.anchorOperations.map((candidate) =>
+        candidate.eventHash === confirmed.eventHash ? confirmed : candidate,
+      ),
+      receiptIndex: loaded.persistent.receiptIndex.map((entry) =>
+        entry.receiptId === nextIndex.receiptId ? nextIndex : entry,
+      ),
+      updatedAt: now,
+    });
+    if (index.blobId !== nextIndex.blobId) {
+      await vault.deleteBlob(index.blobId);
+    }
+    const bundles = new Map(loaded.bundles);
+    bundles.set(anchoredBundle.receipt.receiptId, anchoredBundle);
+    return { bundles, persistent, working: workingFromPersistent(persistent, bundles) };
+  } catch (error) {
+    await vault.deleteBlob(nextIndex.blobId).catch(() => undefined);
+    throw error;
+  }
 }

@@ -489,6 +489,36 @@ textarea:focus-visible {
   border-top: var(--sui-border-thin) solid var(--sui-color-rule);
 }
 
+.anchor-progress {
+  display: grid;
+  gap: var(--sui-space-2);
+  padding: var(--sui-space-3);
+  border: var(--sui-border-thin) solid var(--sui-status-pending-acceptance-border);
+  border-radius: var(--sui-radius-control);
+  color: var(--sui-status-pending-acceptance-fg);
+  background: var(--sui-status-pending-acceptance-bg);
+  font-size: var(--sui-font-size-1);
+  line-height: var(--sui-line-height-body);
+}
+
+.anchor-progress[data-confirmed="true"] {
+  border-color: var(--sui-status-site-confirmed-border);
+  color: var(--sui-status-site-confirmed-fg);
+  background: var(--sui-status-site-confirmed-bg);
+}
+
+.anchor-progress span,
+.anchor-progress code,
+.anchor-progress a {
+  overflow-wrap: anywhere;
+}
+
+.anchor-progress a {
+  width: fit-content;
+  color: var(--sui-color-link);
+  font-weight: 800;
+}
+
 .receipt-security span {
   color: var(--sui-color-link);
   font-size: var(--sui-font-size-1);

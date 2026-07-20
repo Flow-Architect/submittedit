@@ -69,10 +69,12 @@ verified before import persistence.
 Non-extractable keys and encryption at rest do not make a compromised browser trustworthy.
 Malicious browser, operating-system, or altered extension code can invoke live keys or observe
 decrypted process memory. There is no cloud recovery, passphrase reset, cross-device sync, key
-rotation, encrypted upload, relay integration, or live share service in the current extension. A
-separate web-server foundation can persist an opaque AES-GCM envelope and validate a signed
-Attempted or Site confirmed event for a relay operation, but it cannot decrypt the envelope and is
-not yet connected to the extension.
+rotation, hosted production relay, or live share service. A configured extension can upload the
+already-authenticated AES-GCM envelope and matching signed Attempted or Site confirmed event to the
+separate relay. It never sends the AES key or a blockchain signer. The extension persists exact
+operation state and uses a separate public RPC to verify network, registry runtime/protocol,
+transaction/event fields, and stored state before adding public chain metadata to the encrypted
+receipt. The integration test profile uses local Anvil only.
 
 ## Product-truth boundary
 
@@ -80,7 +82,9 @@ Attempted and Site confirmed evidence remains Pending acceptance even when its l
 ciphertext are valid. A local signature authenticates an installation's event; it does not prove
 site honesty, authority acceptance, legal timeliness, identity, or an onchain record. Only a
 verified authoritative acknowledgment may support Accepted or Rejected. The current extension
-makes no relay, RPC, or Monad transaction. The server foundation's separate low-value Testnet
-relayer completed one synthetic development-only Attempted smoke anchor. That anchor is not
-extension/verifier demo data, a production receipt, a real filing, or authority acceptance; the
-one-time sender is retired.
+never signs or directly sends a blockchain transaction. An unconfigured build makes no relay/RPC
+request; a configured build can request relay submission and independently read public chain
+evidence. The extension has not sent a Monad transaction. The server foundation's
+separate low-value Testnet relayer completed one synthetic development-only Attempted smoke anchor.
+That anchor is not extension/verifier demo data, a production receipt, a real filing, or authority
+acceptance; the one-time sender is retired.

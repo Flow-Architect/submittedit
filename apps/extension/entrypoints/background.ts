@@ -1,5 +1,6 @@
 import { browser } from "wxt/browser";
 import { defineBackground } from "wxt/utils/define-background";
+import type { ReceiptId } from "@submittedit/receipt-core";
 import { createSubmittedItExport, openSubmittedItExport } from "../lib/encrypted-receipt";
 import { createStoredAttemptReceipt } from "../lib/attempt-receipt";
 import {
@@ -24,6 +25,13 @@ import {
 } from "../lib/messages";
 import { inspectNormalizedOrigin, inspectOrigin } from "../lib/origin";
 import {
+  ANCHOR_RECOVERY_ALARM,
+  runAnchorWorkflow,
+  type AnchorWorkflowPersistence,
+} from "../lib/anchor-workflow";
+import { anchorEventsNeedRecovery } from "../lib/anchor-state";
+import { explorerTransactionUrl, loadExtensionRelayConfiguration } from "../lib/relay-config";
+import {
   authorizePageProbe,
   captureStatusCommand,
   captureUninstallCommand,
@@ -46,10 +54,14 @@ import {
   deleteAllSecureExtensionData,
   deleteSecureReceipt,
   DuplicateReceiptError,
+  ensureAnchorOperation,
+  getAnchorRelayArtifacts,
   getPrivateReceiptBundle,
   loadSecureExtensionState,
   receiptSecurityMetadata,
   saveSecureExtensionState,
+  saveAnchorOperation,
+  storeVerifiedChainAnchor,
   storeImportedReceiptBundle,
   type LoadedSecureExtensionState,
   type SecureExtensionLocalState,
@@ -93,8 +105,22 @@ const localStorageArea: LocalStorageArea = {
   },
 };
 const cryptoVault = new IndexedDbCryptoVault();
+const relayConfigurationState = loadExtensionRelayConfiguration();
+const relayNetworkOrigins = new Set(
+  relayConfigurationState.kind === "CONFIGURED"
+    ? [
+        new URL(relayConfigurationState.configuration.relayBaseUrl).origin,
+        new URL(relayConfigurationState.configuration.rpcUrl).origin,
+      ]
+    : [],
+);
+
+function isRelayNetworkOrigin(origin: string): boolean {
+  return relayNetworkOrigins.has(origin);
+}
 
 let storageWriteQueue: Promise<void> = Promise.resolve();
+const anchorReceiptFlights = new Map<ReceiptId, Promise<void>>();
 
 interface ConfirmationReviewSession {
   readonly candidate: PageEvidenceCandidate;
@@ -160,9 +186,140 @@ function queueStorageWrite<T>(operation: () => Promise<T>): Promise<T> {
   return queued;
 }
 
+function anchorPersistence(): AnchorWorkflowPersistence {
+  if (relayConfigurationState.kind !== "CONFIGURED") {
+    throw new Error("The extension relay is not configured.");
+  }
+  const configuration = relayConfigurationState.configuration;
+  return {
+    async ensure(receiptId, eventHash, timestamp) {
+      return queueStorageWrite(() =>
+        ensureAnchorOperation(localStorageArea, cryptoVault, {
+          chainId: configuration.chainId,
+          contractAddress: configuration.contractAddress,
+          eventHash,
+          now: timestamp,
+          receiptId,
+          relayBaseUrl: configuration.relayBaseUrl,
+        }),
+      );
+    },
+    async getArtifacts(receiptId, eventHash) {
+      return queueStorageWrite(() =>
+        getAnchorRelayArtifacts(localStorageArea, cryptoVault, receiptId, eventHash),
+      );
+    },
+    async save(operation) {
+      const saved = await queueStorageWrite(() =>
+        saveAnchorOperation(localStorageArea, cryptoVault, operation),
+      );
+      const persisted = saved.persistent.anchorOperations.find(
+        (candidate) => candidate.eventHash === operation.eventHash,
+      );
+      if (!persisted) {
+        throw new Error("The durable anchor operation disappeared after saving.");
+      }
+      return persisted;
+    },
+    async confirm(operation, verified, timestamp) {
+      const saved = await queueStorageWrite(() =>
+        storeVerifiedChainAnchor(
+          localStorageArea,
+          cryptoVault,
+          {
+            anchoredAt: verified.anchoredAt,
+            anchoredBy: verified.anchoredBy,
+            blockNumber: verified.blockNumber,
+            chainId: verified.chainId,
+            contractAddress: verified.contractAddress,
+            eventHash: operation.eventHash,
+            transactionHash: verified.transactionHash,
+          },
+          timestamp,
+        ),
+      );
+      const confirmed = saved.persistent.anchorOperations.find(
+        (candidate) => candidate.eventHash === operation.eventHash,
+      );
+      if (!confirmed) {
+        throw new Error("The independently verified anchor was not saved.");
+      }
+      return confirmed;
+    },
+  };
+}
+
+async function runReceiptAnchorLifecycle(receiptId: ReceiptId): Promise<void> {
+  if (relayConfigurationState.kind !== "CONFIGURED") {
+    return;
+  }
+  const loaded = await queueStorageWrite(() => loadSecureState());
+  const bundle = loaded.bundles.get(receiptId);
+  if (!bundle || bundle.ownership !== "LOCAL") {
+    return;
+  }
+  const persistence = anchorPersistence();
+  for (const event of bundle.receipt.events) {
+    if (event.core.stage !== "ATTEMPTED" && event.core.stage !== "SITE_CONFIRMED") {
+      continue;
+    }
+    const result = await runAnchorWorkflow(
+      { eventHash: event.eventHash, receiptId },
+      relayConfigurationState.configuration,
+      persistence,
+    );
+    if (result.state !== "CHAIN_EVIDENCE_CONFIRMED") {
+      break;
+    }
+  }
+}
+
+function triggerReceiptAnchorLifecycle(receiptId: ReceiptId): Promise<void> {
+  const existing = anchorReceiptFlights.get(receiptId);
+  if (existing) return existing;
+  const flight = runReceiptAnchorLifecycle(receiptId).finally(() => {
+    if (anchorReceiptFlights.get(receiptId) === flight) {
+      anchorReceiptFlights.delete(receiptId);
+    }
+  });
+  anchorReceiptFlights.set(receiptId, flight);
+  return flight;
+}
+
+async function recoverAnchorLifecycles(): Promise<void> {
+  if (relayConfigurationState.kind !== "CONFIGURED") return;
+  const loaded = await queueStorageWrite(() => loadSecureState());
+  const receiptIds = loaded.persistent.receiptIndex
+    .filter((entry) => entry.ownership === "LOCAL")
+    .filter((entry) => {
+      const bundle = loaded.bundles.get(entry.receiptId);
+      const eventHashes =
+        bundle?.receipt.events
+          .filter(
+            (event) => event.core.stage === "ATTEMPTED" || event.core.stage === "SITE_CONFIRMED",
+          )
+          .map((event) => event.eventHash) ?? [];
+      return anchorEventsNeedRecovery(eventHashes, loaded.persistent.anchorOperations);
+    })
+    .map((entry) => entry.receiptId);
+  for (const receiptId of receiptIds) {
+    await triggerReceiptAnchorLifecycle(receiptId);
+  }
+}
+
 async function queryActiveTab() {
-  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+  const tabs = await browser.tabs.query({ active: true, lastFocusedWindow: true });
   return tabs[0] ?? null;
+}
+
+async function readTabPageContext(tabId: number) {
+  try {
+    return parsePageContextCandidate(
+      await browser.tabs.sendMessage(tabId, confirmationContextCommand()),
+    );
+  } catch {
+    return null;
+  }
 }
 
 function unavailableSite(
@@ -297,7 +454,7 @@ async function reconcileAllPermissions(
     }
   }
   for (const origin of granted) {
-    if (!enabledOrigins[origin]) {
+    if (!enabledOrigins[origin] && !isRelayNetworkOrigin(origin)) {
       enabledOrigins[origin] = { origin, enabledAt: timestamp };
       settings = {
         ...settings,
@@ -325,7 +482,8 @@ async function reconcileCurrentSite(
   }
 
   const tabUrl = typeof tab.url === "string" ? tab.url : tab.pendingUrl;
-  if (typeof tabUrl !== "string") {
+  const pageContext = typeof tabUrl === "string" ? null : await readTabPageContext(tab.id);
+  if (typeof tabUrl !== "string" && !pageContext) {
     const boundReceipt = activeReceiptForTab(initialState, tab.id);
     const boundContext = boundReceipt?.confirmationContext;
     const boundOrigin = boundContext ? inspectNormalizedOrigin(boundContext.currentOrigin) : null;
@@ -352,7 +510,10 @@ async function reconcileCurrentSite(
     };
   }
 
-  const inspected = inspectOrigin(tabUrl);
+  const inspected =
+    typeof tabUrl === "string"
+      ? inspectOrigin(tabUrl)
+      : inspectNormalizedOrigin(pageContext!.origin);
   if (!inspected.ok) {
     return {
       state: initialState,
@@ -366,7 +527,7 @@ async function reconcileCurrentSite(
   const metadata = initialState.enabledOrigins[inspected.origin];
   let state = initialState;
 
-  if (permissionGranted && !metadata) {
+  if (permissionGranted && !metadata && !isRelayNetworkOrigin(inspected.origin)) {
     const timestamp = now();
     state = await saveState({
       ...initialState,
@@ -402,9 +563,9 @@ async function reconcileCurrentSite(
       kind: "supported",
       tabId: tab.id,
       origin: inspected.origin,
-      pageUrl: privacySafePageUrl(tabUrl),
+      pageUrl: typeof tabUrl === "string" ? privacySafePageUrl(tabUrl) : pageContext!.pageUrl,
       permissionPattern: inspected.permissionPattern,
-      permissionGranted,
+      permissionGranted: permissionGranted && Boolean(state.enabledOrigins[inspected.origin]),
       enabledAt: state.enabledOrigins[inspected.origin]?.enabledAt ?? null,
     },
   };
@@ -492,8 +653,31 @@ function secureReceiptSummary(
       false,
     );
   }
+  const operation = persistent.anchorOperations.find(
+    (candidate) => candidate.eventHash === summary.eventHash,
+  );
+  const configuration =
+    relayConfigurationState.kind === "CONFIGURED" ? relayConfigurationState.configuration : null;
   return {
     ...summary,
+    anchor: {
+      anchoredAt: operation?.anchoredAt ?? null,
+      anchoredBy: operation?.anchoredBy ?? null,
+      blockNumber: operation?.blockNumber ?? null,
+      chainId: operation?.chainId ?? configuration?.chainId ?? null,
+      configuration: relayConfigurationState.kind,
+      contractAddress: operation?.contractAddress ?? configuration?.contractAddress ?? null,
+      error:
+        operation?.lastError === null || operation?.lastError === undefined
+          ? null
+          : { code: operation.lastError.code, message: operation.lastError.message },
+      explorerUrl:
+        configuration && operation?.transactionHash
+          ? explorerTransactionUrl(configuration, operation.transactionHash)
+          : null,
+      state: operation?.state ?? null,
+      transactionHash: operation?.transactionHash ?? null,
+    },
     security: {
       encrypted: true,
       encryptionAlgorithm: "AES-256-GCM",
@@ -683,6 +867,20 @@ async function revokeCurrentSite(): Promise<BackgroundResponse> {
   const supportedSite = snapshot.site;
 
   await uninstallCaptureForOrigin(supportedSite.permissionPattern);
+  if (isRelayNetworkOrigin(supportedSite.origin)) {
+    const saved = await queueStorageWrite(async () => {
+      const state = await loadState();
+      const enabledOrigins = { ...state.enabledOrigins };
+      delete enabledOrigins[supportedSite.origin];
+      return saveState({
+        ...state,
+        enabledOrigins,
+        settings: addRevokedSite(state.settings, supportedSite.origin, now()),
+      });
+    });
+    await syncCaptureRegistration(saved);
+    return { ok: true, snapshot: await buildSnapshot(saved) };
+  }
   const removed = await browser.permissions.remove({
     origins: [supportedSite.permissionPattern],
   });
@@ -722,7 +920,8 @@ async function removeAllGrantedOrigins(): Promise<void> {
   const allPermissions = await browser.permissions.getAll();
   const origins = (allPermissions.origins ?? []).filter((pattern) => {
     const withoutWildcard = pattern.endsWith("/*") ? pattern.slice(0, -2) : pattern;
-    return inspectNormalizedOrigin(withoutWildcard).ok;
+    const inspected = inspectNormalizedOrigin(withoutWildcard);
+    return inspected.ok && !isRelayNetworkOrigin(inspected.origin);
   });
   if (origins.length > 0) {
     const removed = await browser.permissions.remove({ origins });
@@ -829,6 +1028,9 @@ async function handleCaptureAttempt(
       receipt: summary,
       deduplicated: result.deduplicated,
     });
+    if (!result.deduplicated) {
+      ignoreBackgroundFailure(triggerReceiptAnchorLifecycle(result.receipt.receiptId));
+    }
     return {
       ok: true,
       snapshot: await buildSnapshot(result.saved, result.persistent),
@@ -907,9 +1109,15 @@ async function authorizeObservationSender(
     );
   }
   const currentTab = await browser.tabs.get(sender.tab.id);
+  const currentUrl = typeof currentTab.url === "string" ? privacySafePageUrl(currentTab.url) : null;
+  const currentContext = currentUrl ? null : await readTabPageContext(sender.tab.id);
   if (
-    typeof currentTab.url !== "string" ||
-    privacySafePageUrl(currentTab.url) !== request.pageUrl
+    (currentUrl !== null && currentUrl !== request.pageUrl) ||
+    (currentUrl === null &&
+      (!currentContext ||
+        currentContext.documentInstanceId !== request.documentInstanceId ||
+        currentContext.origin !== request.origin ||
+        currentContext.pageUrl !== request.pageUrl))
   ) {
     throw new RuntimeFailure(
       "CONFIRMATION_CONTEXT_STALE",
@@ -1173,7 +1381,7 @@ async function saveSiteConfirmation(
     );
   }
   const tabUrl = typeof tab.url === "string" ? tab.url : tab.pendingUrl;
-  if (typeof tabUrl !== "string" || privacySafePageUrl(tabUrl) !== session.candidate.pageUrl) {
+  if (typeof tabUrl === "string" && privacySafePageUrl(tabUrl) !== session.candidate.pageUrl) {
     throw new RuntimeFailure(
       "CONFIRMATION_CONTEXT_STALE",
       "The confirmation page changed after the evidence review began.",
@@ -1308,6 +1516,9 @@ async function saveSiteConfirmation(
     return { saved, persistent, ...appended };
   });
   confirmationReviewSessions.delete(request.reviewId);
+  if (!result.deduplicated) {
+    ignoreBackgroundFailure(triggerReceiptAnchorLifecycle(result.receipt.receiptId));
+  }
   return {
     ok: true,
     snapshot: await buildSnapshot(result.saved, result.persistent),
@@ -1494,6 +1705,21 @@ async function handleRequest(
     }
     case "DELETE_RECEIPT":
       return deleteReceipt(request);
+    case "RECHECK_CHAIN": {
+      if (relayConfigurationState.kind !== "CONFIGURED") {
+        throw new RuntimeFailure("ANCHOR_RECHECK_FAILED", relayConfigurationState.reason, false);
+      }
+      try {
+        await triggerReceiptAnchorLifecycle(request.receiptId);
+        return { ok: true, snapshot: await buildSnapshot() };
+      } catch {
+        throw new RuntimeFailure(
+          "ANCHOR_RECHECK_FAILED",
+          "SubmittedIt could not complete this bounded relay and chain recheck. Durable progress was preserved.",
+          true,
+        );
+      }
+    }
     case "EXPORT_RECEIPT":
       return exportReceipt(request);
     case "IMPORT_RECEIPT":
@@ -1558,7 +1784,10 @@ async function updateOriginsFromPermissionEvent(
       if (!inspected.ok) {
         continue;
       }
-      if (granted) {
+      if (
+        granted &&
+        (!isRelayNetworkOrigin(inspected.origin) || enabledOrigins[inspected.origin])
+      ) {
         enabledOrigins[inspected.origin] ??= {
           origin: inspected.origin,
           enabledAt: timestamp,
@@ -1614,6 +1843,12 @@ async function initializeExtension(): Promise<void> {
   });
   await syncCaptureRegistration(state);
   await injectCaptureForEnabledTabs(state);
+  if (relayConfigurationState.kind === "CONFIGURED") {
+    await browser.alarms.create(ANCHOR_RECOVERY_ALARM, { periodInMinutes: 1 });
+    await recoverAnchorLifecycles();
+  } else {
+    await browser.alarms.clear(ANCHOR_RECOVERY_ALARM);
+  }
 }
 
 function ignoreBackgroundFailure(operation: Promise<unknown>): void {
@@ -1630,6 +1865,11 @@ export default defineBackground({
     });
     browser.runtime.onStartup.addListener(() => {
       ignoreBackgroundFailure(initializeExtension());
+    });
+    browser.alarms.onAlarm.addListener((alarm) => {
+      if (alarm.name === ANCHOR_RECOVERY_ALARM) {
+        ignoreBackgroundFailure(recoverAnchorLifecycles());
+      }
     });
     browser.action.onClicked.addListener((tab) => {
       if (!browser.sidePanel?.open || typeof tab.windowId !== "number") {

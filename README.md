@@ -37,10 +37,16 @@ A confirmation remains bound to the originating tab and Attempted event and rema
 acceptance**. The fictional authority can produce real receipt-bound P-256 signatures for matching
 terminal event cores. The server now has a PostgreSQL encrypted-blob and signed-event relay
 foundation with durable idempotency, fee/abuse controls, recovery, and real local-Anvil contract
-tests. It is not hosted. A separate low-value relayer completed exactly one synthetic,
+tests. A configured extension now uploads only its authenticated ciphertext envelope, submits the
+matching signed Attempted or Site confirmed event, persists each handoff state, and independently
+checks the RPC network, registry runtime, transaction receipt/log, and stored contract state before
+displaying **Chain evidence confirmed**. A real persistent-Chromium scenario proves outage and
+browser/server-restart recovery, exact retry behavior, wrong-network and contract-mismatch failure,
+and four distinct local-chain anchors. It is not hosted and the extension has not submitted a live
+Monad transaction. A separate low-value relayer completed exactly one synthetic,
 development-only Monad Testnet smoke anchor; that evidence is not application seed/demo data or a
-real filing. Extension upload/progress, authority polling, and public verification remain later
-work.
+real filing. Production relay configuration and operations, authority polling/attachment, and the
+public verifier remain later work.
 
 See [the extension guide](docs/EXTENSION.md), [privacy boundary](docs/PRIVACY.md),
 [the demo portal guide](docs/DEMO_PORTAL.md), [product contract](docs/PRODUCT_CONTRACT.md),
@@ -79,7 +85,7 @@ or an authority acknowledgment.
 
 ```text
 apps/web                 Filing portal, authority signer, encrypted blob API, and relay foundation
-apps/extension           Exact-origin capture plus signed, encrypted private receipt storage
+apps/extension           Capture, encrypted receipt storage, relay handoff, and chain verification
 packages/receipt-core    Browser-safe receipt protocol, hashing, lifecycle, and vectors
 packages/contract-client Generated registry ABI and strict anchor projection
 packages/ui              Shared identity metadata, CSS tokens, and brand assets
@@ -126,6 +132,7 @@ export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/submittedit_te
 export TEST_DATABASE_URL=$DATABASE_URL
 pnpm check
 ANVIL_BIN="$HOME/.foundry/bin/anvil" FORGE_BIN="$HOME/.foundry/bin/forge" pnpm test:relay-local-chain
+ANVIL_BIN="$HOME/.foundry/bin/anvil" FORGE_BIN="$HOME/.foundry/bin/forge" pnpm test:extension-relay-local-chain
 pnpm test:e2e
 pnpm contract:deployment:check
 export MONAD_TESTNET_RPC_URL=https://testnet-rpc.monad.xyz
@@ -144,10 +151,14 @@ migration and export/import behavior, PostgreSQL web tests, all workspace builds
 exports, the generated extension manifest/output, real-Chromium receipt-core parity, and a
 lightweight secret scan, including a web client-bundle signer audit. The separate
 `pnpm test:relay-local-chain` gate deploys the real registry to a clean Anvil chain with runtime-only
-ephemeral keys and proves transaction, revert, idempotency, and recovery behavior. `pnpm test:e2e` runs the filing portal scenarios and real
+ephemeral keys and proves transaction, revert, idempotency, and recovery behavior.
+`pnpm test:extension-relay-local-chain` adds a clean local registry, real PostgreSQL relay, real
+unpacked extension, and real persistent Chromium; it proves encrypted upload, relay handoff,
+durable browser/server restart recovery, independent signer-free chain verification, and strict
+failure states without using a Monad wallet or network. `pnpm test:e2e` runs the filing portal scenarios and real
 persistent-Chromium extension permission, capture, navigation, restart, signature, ciphertext,
-clean-profile import, duplicate replacement, and deletion checks, plus browser parity, web
-entry-point checks, and Next route type generation. A real PostgreSQL database is required for
+clean-profile import, duplicate replacement, deletion, and local relay lifecycle checks, plus
+browser parity, web entry-point checks, and Next route type generation. A real PostgreSQL database is required for
 both commands. Install the bundled Chromium once with
 `pnpm exec playwright install chromium`. See [the extension guide](docs/EXTENSION.md) and
 [the demo portal guide](docs/DEMO_PORTAL.md) for local setup and test details. Relay configuration,

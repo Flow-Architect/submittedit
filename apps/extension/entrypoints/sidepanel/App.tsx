@@ -10,6 +10,7 @@ import {
   type RuntimeRequest,
 } from "../../lib/messages";
 import { randomOpaqueId } from "../../lib/capture";
+import type { AnchorOperationState } from "../../lib/anchor-state";
 import {
   initialPanelState,
   type ReachablePanelState,
@@ -30,7 +31,7 @@ import {
   type RetentionPreference,
 } from "../../lib/storage-schema";
 
-const MESSAGE_TIMEOUT_MS = 5_000;
+const MESSAGE_TIMEOUT_MS = 15_000;
 const PORTABLE_MESSAGE_TIMEOUT_MS = 60_000;
 
 type PanelScreen = "site" | "settings";
@@ -93,7 +94,9 @@ async function sendRequest(request: RuntimeRequest): Promise<BackgroundResponse>
           },
         });
       },
-      request.type === "EXPORT_RECEIPT" || request.type === "IMPORT_RECEIPT"
+      request.type === "EXPORT_RECEIPT" ||
+        request.type === "IMPORT_RECEIPT" ||
+        request.type === "RECHECK_CHAIN"
         ? PORTABLE_MESSAGE_TIMEOUT_MS
         : MESSAGE_TIMEOUT_MS,
     );
@@ -193,14 +196,97 @@ function SiteActions({
   );
 }
 
+const anchorStateLabels: Record<AnchorOperationState, string> = {
+  SAVED_LOCALLY: "Saved locally",
+  UPLOADING_ENCRYPTED_PROOF: "Uploading encrypted proof",
+  ENCRYPTED_PROOF_UPLOADED: "Encrypted proof uploaded",
+  REQUESTING_MONAD_ANCHOR: "Requesting Monad anchor",
+  SUBMITTED_TO_RELAY: "Submitted to relay",
+  WAITING_FOR_TRANSACTION: "Waiting for transaction",
+  WAITING_FOR_CONFIRMATIONS: "Waiting for confirmations",
+  VERIFYING_CONTRACT_STATE: "Verifying contract state",
+  CHAIN_EVIDENCE_CONFIRMED: "Chain evidence confirmed",
+  RETRYABLE_FAILURE: "Retryable failure",
+  FINAL_FAILURE: "Final failure",
+  RELAY_UNAVAILABLE: "Relay unavailable",
+  RPC_UNAVAILABLE: "RPC unavailable",
+  WRONG_NETWORK: "Wrong network",
+  CONTRACT_MISMATCH: "Contract mismatch",
+  RECONCILIATION_REQUIRED: "Reconciliation required",
+};
+
+function AnchorProgress({
+  busy,
+  onRecheck,
+  receipt,
+}: {
+  busy: boolean;
+  onRecheck: (receipt: PanelReceiptSummary) => void;
+  receipt: PanelReceiptSummary;
+}) {
+  const anchor = receipt.anchor;
+  const confirmed = anchor.state === "CHAIN_EVIDENCE_CONFIRMED";
+  const label =
+    anchor.configuration === "DISABLED"
+      ? "Relay anchoring not configured"
+      : anchor.configuration === "INVALID"
+        ? "Relay configuration invalid"
+        : anchor.state
+          ? anchorStateLabels[anchor.state]
+          : "Saved locally · relay handoff pending";
+  return (
+    <section
+      className="anchor-progress"
+      data-confirmed={confirmed}
+      aria-label="Monad chain evidence"
+    >
+      <strong>
+        <span aria-hidden="true">{confirmed ? "✓" : "◇"}</span> {label}
+      </strong>
+      {confirmed ? (
+        <span>
+          Independently verified on chain {anchor.chainId}, block {anchor.blockNumber}. This proves
+          this receipt event was anchored; it does not prove authority acceptance.
+        </span>
+      ) : anchor.error ? (
+        <span>{anchor.error.message}</span>
+      ) : (
+        <span>Pending acceptance remains separate from relay and blockchain progress.</span>
+      )}
+      {anchor.transactionHash ? (
+        <code title={anchor.transactionHash}>{shortReceiptId(anchor.transactionHash)}</code>
+      ) : null}
+      {anchor.explorerUrl ? (
+        <a href={anchor.explorerUrl} target="_blank" rel="noopener noreferrer">
+          View real transaction
+        </a>
+      ) : null}
+      {anchor.configuration === "CONFIGURED" && !confirmed && !receipt.security.readOnly ? (
+        <button
+          className="button button-secondary"
+          type="button"
+          disabled={busy}
+          onClick={() => onRecheck(receipt)}
+        >
+          {busy ? "Rechecking…" : "Retry / recheck chain"}
+        </button>
+      ) : null}
+    </section>
+  );
+}
+
 function ReceiptSummary({
   receipt,
   onDelete,
   onExport,
+  onRecheck,
+  recheckBusy,
 }: {
   receipt: PanelReceiptSummary;
   onDelete: (receipt: PanelReceiptSummary) => void;
   onExport: (receipt: PanelReceiptSummary) => void;
+  onRecheck: (receipt: PanelReceiptSummary) => void;
+  recheckBusy: boolean;
 }) {
   const siteConfirmed = receipt.status === "SITE_CONFIRMED";
   return (
@@ -220,6 +306,7 @@ function ReceiptSummary({
         <q className="receipt-snippet">{receipt.siteConfirmationSnippet}</q>
       ) : null}
       <small>Pending acceptance</small>
+      <AnchorProgress busy={recheckBusy} onRecheck={onRecheck} receipt={receipt} />
       <div className="receipt-security" aria-label="Receipt security">
         <span>
           ✓ {receipt.security.signatureCount} signature
@@ -244,10 +331,14 @@ function ReceiptHistory({
   snapshot,
   onDelete,
   onExport,
+  onRecheck,
+  recheckReceiptId,
 }: {
   snapshot: PanelSnapshot | null;
   onDelete: (receipt: PanelReceiptSummary) => void;
   onExport: (receipt: PanelReceiptSummary) => void;
+  onRecheck: (receipt: PanelReceiptSummary) => void;
+  recheckReceiptId: string | null;
 }) {
   if (!snapshot?.recentReceipts.length) {
     return null;
@@ -268,12 +359,15 @@ function ReceiptHistory({
             receipt={receipt}
             onDelete={onDelete}
             onExport={onExport}
+            onRecheck={onRecheck}
+            recheckBusy={recheckReceiptId === receipt.receiptId}
           />
         ))}
       </ul>
       <p className="fine-print">
         Each event is signed by this installation and each private bundle is encrypted with its own
-        non-extractable local key. Nothing is uploaded or anchored onchain in this flow.
+        non-extractable local key. Configured builds upload only authenticated ciphertext, then
+        separately submit the bounded signed lifecycle event.
       </p>
     </section>
   );
@@ -310,6 +404,7 @@ export function App() {
   const [confirmationNotice, setConfirmationNotice] = useState("");
   const [receiptAction, setReceiptAction] = useState<ReceiptAction | null>(null);
   const [vaultNotice, setVaultNotice] = useState("");
+  const [recheckReceiptId, setRecheckReceiptId] = useState<string | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const refreshEpoch = useRef(0);
 
@@ -377,6 +472,31 @@ export function App() {
     },
     [applySnapshot, panelState],
   );
+  const refreshRef = useRef(refresh);
+  const reviewInProgressRef = useRef(false);
+
+  useEffect(() => {
+    refreshRef.current = refresh;
+  }, [refresh]);
+
+  useEffect(() => {
+    reviewInProgressRef.current =
+      panelState.kind === "selecting-confirmation" || panelState.kind === "confirmation-review";
+  }, [panelState.kind]);
+
+  useEffect(() => {
+    const handleStorageChange = (changes: Record<string, unknown>, areaName: string) => {
+      if (
+        areaName === "local" &&
+        EXTENSION_STORAGE_KEY in changes &&
+        !reviewInProgressRef.current
+      ) {
+        void refreshRef.current(false);
+      }
+    };
+    browser.storage.onChanged.addListener(handleStorageChange);
+    return () => browser.storage.onChanged.removeListener(handleStorageChange);
+  }, []);
 
   useEffect(() => {
     // Startup synchronizes React with external extension storage and browser state.
@@ -401,11 +521,6 @@ export function App() {
     };
     const handlePermissionChange = () => {
       void refresh();
-    };
-    const handleStorageChange = (changes: Record<string, unknown>, areaName: string) => {
-      if (areaName === "local" && EXTENSION_STORAGE_KEY in changes && !reviewInProgress) {
-        void refresh(false);
-      }
     };
     const handleCaptureActivity = (message: unknown) => {
       const activity = parseCaptureActivityEvent(message);
@@ -485,14 +600,12 @@ export function App() {
     browser.tabs.onUpdated.addListener(handleTabUpdated);
     browser.permissions.onAdded.addListener(handlePermissionChange);
     browser.permissions.onRemoved.addListener(handlePermissionChange);
-    browser.storage.onChanged.addListener(handleStorageChange);
     browser.runtime.onMessage.addListener(handleCaptureActivity);
     return () => {
       browser.tabs.onActivated.removeListener(handleTabActivated);
       browser.tabs.onUpdated.removeListener(handleTabUpdated);
       browser.permissions.onAdded.removeListener(handlePermissionChange);
       browser.permissions.onRemoved.removeListener(handlePermissionChange);
-      browser.storage.onChanged.removeListener(handleStorageChange);
       browser.runtime.onMessage.removeListener(handleCaptureActivity);
     };
   }, [panelState, refresh]);
@@ -750,6 +863,30 @@ export function App() {
   const beginDeleteReceipt = (receipt: PanelReceiptSummary) => {
     setVaultNotice("");
     setReceiptAction({ kind: "DELETE", receipt, busy: false, notice: "" });
+  };
+
+  const recheckChain = async (receipt: PanelReceiptSummary) => {
+    if (recheckReceiptId) return;
+    setRecheckReceiptId(receipt.receiptId);
+    setVaultNotice("Rechecking durable relay progress and independent contract evidence…");
+    const response = await sendRequest({
+      type: "RECHECK_CHAIN",
+      receiptId: receipt.receiptId,
+    });
+    setRecheckReceiptId(null);
+    if (!response.ok) {
+      setVaultNotice(response.error.message);
+      return;
+    }
+    const refreshed = response.snapshot.recentReceipts.find(
+      (candidate) => candidate.receiptId === receipt.receiptId,
+    );
+    setVaultNotice(
+      refreshed?.anchor.state === "CHAIN_EVIDENCE_CONFIRMED"
+        ? "Chain evidence independently verified and saved in the encrypted receipt."
+        : "Bounded recheck finished. Durable progress will continue safely on a later wake.",
+    );
+    await applySnapshot(response.snapshot, false);
   };
 
   const confirmDeleteReceipt = async () => {
@@ -1725,12 +1862,15 @@ export function App() {
             snapshot={currentSnapshot}
             onDelete={beginDeleteReceipt}
             onExport={beginExport}
+            onRecheck={(receipt) => void recheckChain(receipt)}
+            recheckReceiptId={recheckReceiptId}
           />
           <aside className="privacy-note" aria-label="Privacy boundary">
             <strong>Signed and encrypted local browser evidence.</strong>
             <span>
-              Private values stay inside authenticated ciphertext. No telemetry, portal API call,
-              authority outcome, relay action, or blockchain transaction occurs in this flow.
+              The private receipt body stays inside authenticated ciphertext. A configured relay
+              also receives the bounded, privacy-filtered signed lifecycle event, so this demo uses
+              synthetic data only. Authority acceptance remains a separate verified outcome.
             </span>
           </aside>
         </>

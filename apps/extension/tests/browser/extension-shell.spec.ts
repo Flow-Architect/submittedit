@@ -20,6 +20,7 @@ import {
   type Worker,
 } from "@playwright/test";
 import type { BackgroundResponse, RuntimeRequest } from "../../lib/messages";
+import type { AnchorOperation } from "../../lib/anchor-state";
 import { type LocalReceiptSummary, type StoredAttemptReceipt } from "../../lib/storage-schema";
 
 const fixtureOrigin = "http://127.0.0.1:4179";
@@ -37,7 +38,8 @@ interface BrowserSecureIndexEntry {
 }
 
 interface BrowserPersistentExtensionState {
-  schemaVersion: 4;
+  schemaVersion: 5;
+  anchorOperations: AnchorOperation[];
   hasSeenWelcome: boolean;
   settings: BrowserExtensionState["settings"];
   enabledOrigins: BrowserExtensionState["enabledOrigins"];
@@ -170,7 +172,7 @@ async function readExtensionState(worker: Worker): Promise<BrowserExtensionState
       const persistent = stored[key] as BrowserPersistentExtensionState | undefined;
       if (
         !persistent ||
-        persistent.schemaVersion !== 4 ||
+        persistent.schemaVersion !== 5 ||
         !Array.isArray(persistent.receiptIndex)
       ) {
         return null;
@@ -547,7 +549,8 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
       },
     },
     secureState: {
-      schemaVersion: 4,
+      schemaVersion: 5,
+      anchorOperations: [],
       receiptIndex: [],
       identity: {
         publicKey: {
@@ -742,6 +745,9 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   await expect(panelPage.getByText("3", { exact: true })).toBeVisible();
   await panelPage.getByLabel("Reminder interval").selectOption("3-days");
   await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
+  await expect(sendExtensionMessage(panelPage, { type: "BOOTSTRAP" })).resolves.toMatchObject({
+    ok: true,
+  });
   await worker.evaluate(async (storageKey) => {
     const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
     const stored = await chromeApi.storage.local.get(storageKey);
@@ -763,6 +769,20 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
       },
     });
   }, extensionStorageKey);
+  await expect
+    .poll(async () =>
+      (await readExtensionState(worker)).settings.revokedSites.map((site) => site.origin),
+    )
+    .toContain("https://refresh-regression.example");
+  const refreshedSnapshot = await sendExtensionMessage(panelPage, { type: "BOOTSTRAP" });
+  expect(refreshedSnapshot).toMatchObject({
+    ok: true,
+    snapshot: {
+      settings: {
+        revokedSites: [expect.objectContaining({ origin: "https://refresh-regression.example" })],
+      },
+    },
+  });
   await expect(panelPage.getByText("https://refresh-regression.example")).toBeVisible();
   await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
   await panelPage.getByLabel("Local retention").selectOption("30-days");
@@ -853,7 +873,8 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
     receiptIndex: [],
   });
   expect(resetState.secureState).toMatchObject({
-    schemaVersion: 4,
+    schemaVersion: 5,
+    anchorOperations: [],
     identity: null,
     receiptIndex: [],
   });

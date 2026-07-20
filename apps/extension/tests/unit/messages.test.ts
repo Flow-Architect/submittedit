@@ -172,6 +172,18 @@ describe("runtime message schema", () => {
         siteConfirmedAt: null,
         siteConfirmationSnippet: null,
         siteConfirmationOrigin: null,
+        anchor: {
+          anchoredAt: null,
+          anchoredBy: null,
+          blockNumber: null,
+          chainId: 10143,
+          configuration: "CONFIGURED",
+          contractAddress: "0x63914900a2D3571F92506821a76c4036C3e25883",
+          error: null,
+          explorerUrl: null,
+          state: "SAVED_LOCALLY",
+          transactionHash: null,
+        },
         security: {
           encrypted: true,
           encryptionAlgorithm: "AES-256-GCM",

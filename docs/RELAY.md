@@ -5,7 +5,10 @@
 The relay foundation is a server-side, PostgreSQL-backed checkpoint. It stores opaque Goal 10
 ciphertext and relays verified `ATTEMPTED` and `SITE_CONFIRMED` fingerprints through the real
 `SubmissionReceiptRegistry` on a local Anvil-compatible chain. It is not hosted and has not sent a
-production or user transaction. The extension does not call these APIs until Goal 12.
+production or user transaction. A build-time configured extension now calls these APIs, persists
+the handoff, and independently re-verifies the resulting chain evidence through a separately
+configured public RPC. The extension integration uses only synthetic data and an
+ephemeral local Anvil signer; it sent no Monad transaction.
 
 The separately created low-value Monad Testnet account `submittedit-relayer` completed exactly one
 synthetic development-only live smoke anchor. Its one-time sender is now permanently disabled. The
@@ -59,6 +62,12 @@ metadata locator without breaking AES-GCM additional-data authentication. Postgr
 envelope as JSONB, byte length, privacy-safe public metadata, timestamps, and retention state; it
 does not store plaintext or a decryption key.
 
+The authenticated metadata `blobId` is also a durable upload-idempotency boundary. An exact retry,
+including a concurrent retry, returns the original service locator and does not create another
+row. Reusing that identifier with any changed envelope or byte length returns
+`ENCRYPTED_BLOB_CONFLICT`. Migration `0003_relay_blob_idempotency` enforces the unique database
+constraint so multiple app instances cannot race past this rule.
+
 ### Relay request
 
 The relay POST body contains exactly:
@@ -82,7 +91,10 @@ The relay POST body contains exactly:
 ```
 
 The 196,608-byte relay limit accommodates the bounded Goal 10 event without accepting a complete
-plaintext receipt bundle. The server performs this order before broadcast:
+plaintext receipt bundle. The event core can contain privacy-filtered ordinary submitted values,
+so it exists transiently in server memory for parsing and signature validation even though the
+relay does not persist or log the request body. This integration path is synthetic-data-only. The server
+performs this order before broadcast:
 
 1. enforce method/content type/size and strict keys;
 2. require the referenced active encrypted blob;
@@ -101,8 +113,8 @@ plaintext receipt bundle. The server performs this order before broadcast:
     rate/budget controls, acquire PostgreSQL idempotency, and only then sign/broadcast.
 
 An invalid signature never calls the chain gateway. An invalid transition never signs or spends
-gas. Authority events remain deferred until Goal 12 supplies and validates the Goal 06 authority
-evidence; this checkpoint does not weaken their protocol requirements.
+gas. Authority events remain deferred until a later checkpoint supplies and validates the Goal 06
+authority evidence; this integration does not weaken their protocol requirements.
 
 ### Operation response
 
@@ -187,7 +199,8 @@ signatures, full public keys, environment variables, database/RPC URLs, and secr
 - `relay_signer_nonces`: durable multi-instance nonce allocation.
 
 Migration `0002_relay_foundation` is applied after Goal 06's `0001`; the migration runner discovers
-reviewed numbered files in lexical order.
+reviewed numbered files in lexical order. Migration `0003_relay_blob_idempotency` adds the exact
+encrypted-envelope retry constraint without rewriting existing ciphertext.
 
 ## Configuration
 
@@ -225,6 +238,23 @@ The ordinary production constructor does not accept `SUBMITTEDIT_RELAYER_PRIVATE
 descriptor path below exists only for the explicit one-time Testnet smoke process; it does not
 weaken the future hosting-secret boundary.
 
+The extension has a separate public build-time boundary documented in
+[`apps/extension/.env.example`](../apps/extension/.env.example):
+
+| Variable                                                            | Purpose                                                        |
+| ------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `WXT_SUBMITTEDIT_RELAY_URL`                                         | Credential-free relay origin used for blob/event/status calls  |
+| `WXT_SUBMITTEDIT_RPC_URL`                                           | Separate credential-free public RPC used for read verification |
+| `WXT_SUBMITTEDIT_CHAIN_ID`                                          | Pinned expected chain                                          |
+| `WXT_SUBMITTEDIT_CONTRACT_ADDRESS`                                  | Pinned checksum registry                                       |
+| `WXT_SUBMITTEDIT_CONTRACT_RUNTIME_HASH`                             | Pinned runtime fingerprint                                     |
+| `WXT_SUBMITTEDIT_DEPLOYMENT_BLOCK`                                  | Lower bound for event discovery                                |
+| `WXT_SUBMITTEDIT_EXPLORER_{TRANSACTION,ADDRESS,BLOCK}_URL_TEMPLATE` | Optional public links; no secrets                              |
+
+The extension cannot accept a signer or wallet key. Its build audit rejects relayer/deployer key
+names and wallet-client primitives from the compiled runtime. Relay and RPC origins become exact
+install-time host permissions only in a configured build; an unconfigured build has neither.
+
 ## Local validation
 
 ```bash
@@ -234,12 +264,20 @@ export ANVIL_BIN="$HOME/.foundry/bin/anvil"
 export FORGE_BIN="$HOME/.foundry/bin/forge"
 pnpm --filter @submittedit/web db:migrate
 pnpm test:relay-local-chain
+pnpm test:extension-relay-local-chain
 pnpm exec playwright test --grep relay
 ```
 
 The local test compiles and deploys the real contract on a clean chain, generates separate
 ephemeral deployer/relayer keys, uses only synthetic data, and checks real receipts/logs/storage.
 Generated Foundry output and chain state remain ignored.
+
+The extension relay test additionally builds the exact configured Manifest V3 artifact, drives the
+fictional filing portal through real persistent Chromium, inspects real PostgreSQL operation/blob
+rows, restarts the web process and browser profile, and independently verifies four distinct local
+transactions. It covers RPC outage, wrong chain, contract mismatch, exact concurrent retry, and
+request/log/private-state boundaries. All signer material is generated in the test process,
+redacted from failures, and discarded; no Monad RPC or wallet is used.
 
 Reset only synthetic demo/relay test data in a disposable local database with:
 
@@ -315,7 +353,8 @@ The API exposes these machine-readable public codes without internal diagnostic 
   `INVALID_SCHEMA`, `INVALID_ENCRYPTED_ENVELOPE`;
 - evidence/binding: `BLOB_NOT_FOUND`, `INVALID_EVENT_HASH`, `INVALID_SIGNATURE`,
   `KEY_FINGERPRINT_MISMATCH`, `INVALID_TRANSITION`, `INCORRECT_PREVIOUS_EVENT`;
-- replay/abuse: `EVENT_ALREADY_ANCHORED`, `IDEMPOTENCY_CONFLICT`, `RATE_LIMITED`,
+- replay/abuse: `ENCRYPTED_BLOB_CONFLICT`, `EVENT_ALREADY_ANCHORED`,
+  `IDEMPOTENCY_CONFLICT`, `RATE_LIMITED`,
   `DAILY_BUDGET_EXCEEDED`;
 - runtime/chain: `RELAYER_UNAVAILABLE`, `INSUFFICIENT_RELAYER_FUNDS`, `RPC_UNAVAILABLE`,
   `WRONG_CHAIN`, `CONTRACT_MISMATCH`;
@@ -325,8 +364,10 @@ The API exposes these machine-readable public codes without internal diagnostic 
 
 ## Remaining work
 
-Goal 12 must add explicit extension network consent, ciphertext upload, fragment-only key sharing,
-relay progress UI, authority polling/terminal-event attachment, and live onchain metadata storage.
-The final verifier, hosted operations, retention/delete API, key rotation, and production incident
-automation remain later work. No onchain inclusion can prove authority acceptance or legal
-timeliness.
+The extension-to-relay ciphertext upload, durable progress UI, restart recovery, and independent
+chain verification are implemented and validated against a real local stack. A later authorized
+A later authorized live-network test must still establish production endpoint consent/configuration and may perform a live
+Monad extension anchor only under its own wallet/relayer approval. Fragment-only sharing,
+authority polling/terminal-event attachment, the final public verifier, hosted operations,
+retention/delete API, key rotation, and production incident automation remain later work. No
+onchain inclusion can prove authority acceptance or legal timeliness.

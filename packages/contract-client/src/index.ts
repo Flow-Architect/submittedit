@@ -1,11 +1,43 @@
 import type { Abi, Address } from "viem";
 import { isAddress } from "viem";
 import { monadTestnet } from "viem/chains";
-import submissionReceiptRegistryAbiJson from "./abi/SubmissionReceiptRegistry.json" with { type: "json" };
 import {
   SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
   submissionReceiptRegistryDeployment,
 } from "./deployment.js";
+import {
+  CONTRACT_RECEIPT_STAGES,
+  ZERO_BYTES32,
+  submissionReceiptRegistryAbi,
+  type Bytes32Hex,
+  type ContractReceiptStage,
+  type ReceiptCoreEventStage,
+  type ReceiptCoreLifecycleStage,
+} from "./registry.js";
+
+export {
+  ANCHOR_VERIFICATION_ERROR_CODES,
+  AnchorVerificationError,
+  findSubmissionReceiptAnchorTransaction,
+  verifySubmissionReceiptAnchor,
+  type AnchorDiscoveryExpectation,
+  type AnchorVerificationBlockTag,
+  type AnchorVerificationErrorCode,
+  type AnchorVerificationExpectation,
+  type VerifiedSubmissionReceiptAnchor,
+} from "./verify.js";
+
+export {
+  CONTRACT_EVENT_NAMES,
+  CONTRACT_RECEIPT_STAGES,
+  SUBMISSION_RECEIPT_REGISTRY_PROTOCOL_VERSION,
+  ZERO_BYTES32,
+  submissionReceiptRegistryAbi,
+  type Bytes32Hex,
+  type ContractReceiptStage,
+  type ReceiptCoreEventStage,
+  type ReceiptCoreLifecycleStage,
+} from "./registry.js";
 
 export { monadTestnet as submittedItChain } from "viem/chains";
 export {
@@ -16,30 +48,11 @@ export {
   type SubmissionReceiptRegistryDeployment,
 } from "./deployment.js";
 
-export const SUBMISSION_RECEIPT_REGISTRY_PROTOCOL_VERSION = 1 as const;
-export const ZERO_BYTES32 = `0x${"0".repeat(64)}` as Bytes32Hex;
-
-export const CONTRACT_RECEIPT_STAGES = {
-  NONE: 0,
-  ATTEMPTED: 1,
-  SITE_CONFIRMED: 2,
-  AUTHORITY_ACCEPTED: 3,
-  AUTHORITY_REJECTED: 4,
-} as const;
-
-export const CONTRACT_EVENT_NAMES = ["ReceiptEventAnchored"] as const;
-
-export const submissionReceiptRegistryAbi = submissionReceiptRegistryAbiJson as Abi;
 export const submissionReceiptRegistryReadConfig = {
   abi: submissionReceiptRegistryAbi,
   address: SUBMISSION_RECEIPT_REGISTRY_ADDRESS,
   chainId: submissionReceiptRegistryDeployment.network.chainId,
 } as const;
-
-export type Bytes32Hex = `0x${string}`;
-export type ReceiptCoreEventStage = Exclude<keyof typeof CONTRACT_RECEIPT_STAGES, "NONE">;
-export type ReceiptCoreLifecycleStage = keyof typeof CONTRACT_RECEIPT_STAGES;
-export type ContractReceiptStage = (typeof CONTRACT_RECEIPT_STAGES)[ReceiptCoreLifecycleStage];
 
 /** Exact Goal 03 chain-anchor projection accepted by the contract-client boundary. */
 export interface ReceiptCoreChainAnchorProjection {

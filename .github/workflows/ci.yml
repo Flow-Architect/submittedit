@@ -72,11 +72,17 @@ jobs:
           FORGE_BIN="$RELAY_FOUNDRY_DIR/bin/forge"
           pnpm test:relay-local-chain
 
+      - name: Run real Chromium extension-to-relay integration
+        run: >-
+          ANVIL_BIN="$RELAY_FOUNDRY_DIR/bin/anvil"
+          FORGE_BIN="$RELAY_FOUNDRY_DIR/bin/forge"
+          pnpm test:extension-relay-local-chain
+
       - name: Run workspace checks
         run: pnpm check
 
-      - name: Run browser end-to-end checks
-        run: pnpm test:e2e
+      - name: Run remaining browser end-to-end checks
+        run: SKIP_EXTENSION_RELAY_LOCAL_CHAIN=true pnpm test:e2e
 
   contracts:
     name: Monad Foundry checks
