@@ -745,6 +745,7 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   await expect(panelPage.getByText("3", { exact: true })).toBeVisible();
   await panelPage.getByLabel("Reminder interval").selectOption("3-days");
   await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
+  await panelPage.bringToFront();
   await expect(sendExtensionMessage(panelPage, { type: "BOOTSTRAP" })).resolves.toMatchObject({
     ok: true,
   });
