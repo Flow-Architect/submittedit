@@ -25,6 +25,8 @@ import { type LocalReceiptSummary, type StoredAttemptReceipt } from "../../lib/s
 
 const fixtureOrigin = "http://127.0.0.1:4179";
 const fixturePattern = `${fixtureOrigin}/*`;
+const refreshRegressionOrigin = "https://refresh-regression.example";
+const refreshRegressionPattern = `${refreshRegressionOrigin}/*`;
 const redirectedOrigin = "http://localhost:4179";
 const redirectedPattern = `${redirectedOrigin}/*`;
 const productionExtensionPath = resolve(".output/chrome-mv3");
@@ -474,7 +476,10 @@ function siteConfirmedCore(state: BrowserExtensionState, index: number): SiteCon
 test("attempt capture persists across navigation, deduplicates retries, and remains local-only", async ({}, testInfo) => {
   const userDataDirectory = testInfo.outputPath("extension-profile");
   const browserExtensionPath = testInfo.outputPath("unpacked-extension");
-  const productionManifest = await preparePermissionBootstrapExtension(browserExtensionPath);
+  const productionManifest = await preparePermissionBootstrapExtension(browserExtensionPath, [
+    fixturePattern,
+    refreshRegressionPattern,
+  ]);
   const observedHttpRequests: string[] = [];
   const runtimeErrors: string[] = [];
   const panelConsoleErrors: string[] = [];
@@ -519,6 +524,7 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   expect(runtimeManifest.content_scripts ?? []).toEqual([]);
   expect(runtimeManifest.optional_host_permissions).toEqual(["http://*/*", "https://*/*"]);
   expect(await containsFixturePermission(worker)).toBe(true);
+  expect(await containsOriginPermission(worker, refreshRegressionPattern)).toBe(true);
 
   await expect
     .poll(async () =>
@@ -533,7 +539,7 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
       expect.objectContaining({
         id: "submittedit-attempt-capture",
         js: ["content-scripts/capture.js"],
-        matches: [fixturePattern],
+        matches: [fixturePattern, refreshRegressionPattern],
         persistAcrossSessions: true,
         runAt: "document_start",
       }),
@@ -745,46 +751,27 @@ test("attempt capture persists across navigation, deduplicates retries, and rema
   await expect(panelPage.getByText("3", { exact: true })).toBeVisible();
   await panelPage.getByLabel("Reminder interval").selectOption("3-days");
   await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
-  await panelPage.bringToFront();
-  await expect(sendExtensionMessage(panelPage, { type: "BOOTSTRAP" })).resolves.toMatchObject({
-    ok: true,
-  });
-  await worker.evaluate(async (storageKey) => {
+  const removedRefreshRegressionPermission = await worker.evaluate(async (permissionPattern) => {
     const chromeApi = (globalThis as unknown as { chrome: ExtensionChrome }).chrome;
-    const stored = await chromeApi.storage.local.get(storageKey);
-    const state = stored[storageKey] as BrowserPersistentExtensionState;
-    await chromeApi.storage.local.set({
-      [storageKey]: {
-        ...state,
-        settings: {
-          ...state.settings,
-          revokedSites: [
-            ...state.settings.revokedSites,
-            {
-              origin: "https://refresh-regression.example",
-              revokedAt: new Date().toISOString(),
-            },
-          ],
-        },
-        updatedAt: new Date().toISOString(),
-      },
-    });
-  }, extensionStorageKey);
+    return chromeApi.permissions.remove({ origins: [permissionPattern] });
+  }, refreshRegressionPattern);
+  expect(removedRefreshRegressionPermission).toBe(true);
+  await expect.poll(() => containsOriginPermission(worker, refreshRegressionPattern)).toBe(false);
   await expect
     .poll(async () =>
       (await readExtensionState(worker)).settings.revokedSites.map((site) => site.origin),
     )
-    .toContain("https://refresh-regression.example");
+    .toContain(refreshRegressionOrigin);
   const refreshedSnapshot = await sendExtensionMessage(panelPage, { type: "BOOTSTRAP" });
   expect(refreshedSnapshot).toMatchObject({
     ok: true,
     snapshot: {
       settings: {
-        revokedSites: [expect.objectContaining({ origin: "https://refresh-regression.example" })],
+        revokedSites: [expect.objectContaining({ origin: refreshRegressionOrigin })],
       },
     },
   });
-  await expect(panelPage.getByText("https://refresh-regression.example")).toBeVisible();
+  await expect(panelPage.getByText(refreshRegressionOrigin)).toBeVisible();
   await expect(panelPage.getByLabel("Reminder interval")).toHaveValue("3-days");
   await panelPage.getByLabel("Local retention").selectOption("30-days");
   await expect(panelPage.getByLabel("Local retention")).toHaveValue("30-days");
